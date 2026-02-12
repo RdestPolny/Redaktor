@@ -7,3 +7,4 @@ pdf_processor_projects/
 *.md
 cloudbuild.yaml
 .env
+.streamlit/

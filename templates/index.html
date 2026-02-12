@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redaktor AI — Procesor Dokumentów</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- HEADER -->
+    <header class="header">
+        <div class="header-left">
+            <h1>🚀 Redaktor AI</h1>
+            <span class="badge">Gemini 3 Flash</span>
+        </div>
+        <div class="header-right">
+            <span id="status-text" class="status-text">Brak dokumentu</span>
+        </div>
+    </header>
+
+    <!-- UPLOAD ZONE -->
+    <section id="upload-section" class="upload-section">
+        <div class="upload-zone" id="upload-zone">
+            <div class="upload-icon">📄</div>
+            <h2>Przeciągnij plik tutaj</h2>
+            <p>lub kliknij aby wybrać</p>
+            <p class="upload-formats">Obsługiwane formaty: {{ supported_formats | join(', ') }}</p>
+            <input type="file" id="file-input" accept=".pdf,.docx,.doc" hidden>
+        </div>
+        <div id="upload-progress" class="upload-progress hidden">
+            <div class="spinner"></div>
+            <p>Ładowanie pliku...</p>
+        </div>
+    </section>
+
+    <!-- MAIN WORKSPACE -->
+    <section id="workspace" class="workspace hidden">
+        <!-- TOOLBAR -->
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <span id="doc-info" class="doc-info"></span>
+            </div>
+            <div class="toolbar-center">
+                <button id="btn-prev" class="btn btn-nav" onclick="navigatePage(-1)" disabled>⬅️</button>
+                <span id="page-indicator" class="page-indicator">1 / 1</span>
+                <button id="btn-next" class="btn btn-nav" onclick="navigatePage(1)" disabled>➡️</button>
+                <input type="range" id="page-slider" min="1" max="1" value="1" class="page-slider">
+            </div>
+            <div class="toolbar-right">
+                <button class="btn btn-secondary" onclick="saveProject()">💾 Zapisz</button>
+                <a id="btn-download-all" class="btn btn-secondary" href="/download/articles">📥 Pobierz ZIP</a>
+            </div>
+        </div>
+
+        <!-- PROCESSING CONTROLS -->
+        <div class="processing-bar">
+            <div class="processing-options">
+                <select id="process-mode" class="select-mode">
+                    <option value="all">Cały dokument</option>
+                    <option value="range">Zakres stron</option>
+                    <option value="article">Artykuł wielostronicowy</option>
+                </select>
+
+                <div id="range-controls" class="range-controls hidden">
+                    <label>Od: <input type="number" id="range-start" min="1" value="1" class="input-small"></label>
+                    <label>Do: <input type="number" id="range-end" min="1" value="1" class="input-small"></label>
+                </div>
+
+                <div id="article-controls" class="article-controls hidden">
+                    <input type="text" id="article-groups" placeholder="np. 1-3; 5,6; 8-10" class="input-groups">
+                </div>
+            </div>
+
+            <button id="btn-process" class="btn btn-primary" onclick="startProcessing()">
+                🚀 Przetwórz
+            </button>
+        </div>
+
+        <!-- PROGRESS BAR -->
+        <div id="progress-bar" class="progress-container hidden">
+            <div class="progress-track">
+                <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+            </div>
+            <span id="progress-text" class="progress-text">0%</span>
+        </div>
+
+        <!-- CONTENT AREA -->
+        <div class="content-area">
+            <!-- ORIGINAL -->
+            <div class="panel panel-original">
+                <div class="panel-header">
+                    <h3>📄 Oryginał</h3>
+                </div>
+                <div id="original-content" class="panel-body">
+                    <p class="placeholder-text">Wybierz stronę aby zobaczyć oryginał</p>
+                </div>
+                <div id="raw-text-toggle" class="raw-text-section hidden">
+                    <button class="btn btn-ghost" onclick="toggleRawText()">👁️ Surowy tekst</button>
+                    <pre id="raw-text" class="raw-text hidden"></pre>
+                </div>
+            </div>
+
+            <!-- PROCESSED -->
+            <div class="panel panel-processed">
+                <div class="panel-header">
+                    <h3>🤖 Przetworzone przez AI</h3>
+                    <span id="result-type" class="result-badge hidden"></span>
+                </div>
+                <div id="processed-content" class="panel-body">
+                    <p class="placeholder-text">Uruchom przetwarzanie aby zobaczyć wynik</p>
+                </div>
+
+                <!-- ACTION BUTTONS -->
+                <div id="action-buttons" class="action-buttons hidden">
+                    <button class="btn btn-action" onclick="rerollPage()">🔄 Ponownie</button>
+                    <button id="btn-meta" class="btn btn-action" onclick="generateMeta()">✨ Meta tagi</button>
+                    <button id="btn-seo" class="btn btn-action" onclick="generateSeo()">🚀 SEO</button>
+                    <button id="btn-html" class="btn btn-action" onclick="downloadHtml()">📄 HTML</button>
+                </div>
+
+                <!-- META TAGS RESULT -->
+                <div id="meta-result" class="meta-result hidden">
+                    <h4>✨ Meta Tagi</h4>
+                    <div class="meta-field">
+                        <label>Title:</label>
+                        <input type="text" id="meta-title" readonly>
+                    </div>
+                    <div class="meta-field">
+                        <label>Description:</label>
+                        <textarea id="meta-description" readonly></textarea>
+                    </div>
+                </div>
+
+                <!-- SEO RESULT -->
+                <div id="seo-result" class="seo-result hidden">
+                    <h4>🚀 Wersja SEO</h4>
+                    <div id="seo-content" class="seo-content"></div>
+                    <a id="btn-download-seo" class="btn btn-secondary" href="#">📥 Pobierz SEO</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- LOADING OVERLAY -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="loading-box">
+            <div class="spinner large"></div>
+            <p id="loading-text">Przetwarzanie...</p>
+        </div>
+    </div>
+
+    <!-- TOAST -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

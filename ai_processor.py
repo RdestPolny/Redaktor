@@ -3,11 +3,11 @@ Redaktor AI — AI Processor
 Integracja z Gemini 3 Flash Preview przez google-genai SDK.
 """
 
-import os
 import json
-import asyncio
-import streamlit as st
-from typing import Dict, List, Optional
+import logging
+import time
+from typing import Dict, List
+
 from pydantic import BaseModel, Field
 
 from google import genai
@@ -16,10 +16,13 @@ from google.genai import types
 from document_handler import PageContent
 from utils import markdown_to_html
 
+logger = logging.getLogger(__name__)
+
 # ===== KONFIGURACJA =====
 
 MAX_RETRIES = 3
 DEFAULT_MODEL = "gemini-3-flash-preview"
+API_KEY = "AIzaSyAl69MEfwxVIiU7sX6M3u-KOqVI_c782Yc"
 
 
 # ===== PYDANTIC SCHEMAS =====
@@ -108,11 +111,11 @@ ZASADY KRYTYCZNE:
 class AIProcessor:
     """Klasa obsługująca komunikację z Gemini API."""
 
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL):
-        self.client = genai.Client(api_key=api_key)
+    def __init__(self, api_key: str = None, model: str = DEFAULT_MODEL):
+        self.client = genai.Client(api_key=api_key or API_KEY)
         self.model = model
 
-    async def _generate(
+    def _generate(
         self,
         text: str,
         system_prompt: str,
@@ -125,8 +128,7 @@ class AIProcessor:
 
         for attempt in range(MAX_RETRIES):
             try:
-                response = await asyncio.to_thread(
-                    self.client.models.generate_content,
+                response = self.client.models.generate_content(
                     model=self.model,
                     contents=text,
                     config=types.GenerateContentConfig(
@@ -145,20 +147,19 @@ class AIProcessor:
 
             except json.JSONDecodeError as e:
                 last_error = e
-                st.warning(
-                    f"Próba {attempt + 1}/{MAX_RETRIES}: "
-                    f"Błąd dekodowania JSON. Ponawiam..."
+                logger.warning(
+                    "Próba %d/%d: Błąd dekodowania JSON. Ponawiam...",
+                    attempt + 1, MAX_RETRIES,
                 )
-                await asyncio.sleep(1.5 * (attempt + 1))
+                time.sleep(1.5 * (attempt + 1))
                 continue
             except Exception as e:
                 last_error = e
-                error_str = str(e)
-                st.warning(
-                    f"Próba {attempt + 1}/{MAX_RETRIES}: "
-                    f"Błąd API: {error_str[:200]}. Ponawiam..."
+                logger.warning(
+                    "Próba %d/%d: Błąd API: %s. Ponawiam...",
+                    attempt + 1, MAX_RETRIES, str(e)[:200],
                 )
-                await asyncio.sleep(2.0 * (attempt + 1))
+                time.sleep(2.0 * (attempt + 1))
                 continue
 
         return {
@@ -167,7 +168,7 @@ class AIProcessor:
             "raw_response": raw_text,
         }
 
-    async def process_page(self, page_content: PageContent) -> Dict:
+    def process_page(self, page_content: PageContent) -> Dict:
         """Przetwarza pojedynczą stronę."""
         page_data = {"page_number": page_content.page_number}
 
@@ -178,7 +179,7 @@ class AIProcessor:
             )
             return page_data
 
-        result = await self._generate(
+        result = self._generate(
             text=page_content.text,
             system_prompt=ARTICLE_SYSTEM_PROMPT,
             response_schema=ArticleResponse,
@@ -190,9 +191,7 @@ class AIProcessor:
             page_data["formatted_content"] = (
                 f"<div class='error-box'>"
                 f"<strong>{result['error']}</strong><br>"
-                f"<i>Ostatni błąd: {result['last_known_error']}</i><br>"
-                f"<details><summary>Pokaż surową odpowiedź</summary>"
-                f"<pre>{result.get('raw_response', '')}</pre></details>"
+                f"<i>Ostatni błąd: {result['last_known_error']}</i>"
                 f"</div>"
             )
         else:
@@ -210,9 +209,7 @@ class AIProcessor:
 
         return page_data
 
-    async def process_article_group(
-        self, pages_content: List[PageContent]
-    ) -> Dict:
+    def process_article_group(self, pages_content: List[PageContent]) -> Dict:
         """Przetwarza grupę stron jako jeden artykuł."""
         page_numbers = [p.page_number for p in pages_content]
 
@@ -221,7 +218,7 @@ class AIProcessor:
             for p in pages_content
         ])
 
-        result = await self._generate(
+        result = self._generate(
             text=combined_text,
             system_prompt=ARTICLE_SYSTEM_PROMPT,
             response_schema=ArticleResponse,
@@ -235,9 +232,7 @@ class AIProcessor:
             article_data["formatted_content"] = (
                 f"<div class='error-box'>"
                 f"<strong>{result['error']}</strong><br>"
-                f"<i>Ostatni błąd: {result['last_known_error']}</i><br>"
-                f"<details><summary>Pokaż surową odpowiedź</summary>"
-                f"<pre>{result.get('raw_response', '')}</pre></details>"
+                f"<i>Ostatni błąd: {result['last_known_error']}</i>"
                 f"</div>"
             )
         else:
@@ -245,9 +240,7 @@ class AIProcessor:
             formatted_text = result.get("formatted_text", "")
 
             if article_data["type"] == "artykuł":
-                article_data["formatted_content"] = markdown_to_html(
-                    formatted_text
-                )
+                article_data["formatted_content"] = markdown_to_html(formatted_text)
                 article_data["raw_markdown"] = formatted_text
             else:
                 article_data["formatted_content"] = (
@@ -257,18 +250,18 @@ class AIProcessor:
 
         return article_data
 
-    async def generate_meta_tags(self, article_text: str) -> Dict:
+    def generate_meta_tags(self, article_text: str) -> Dict:
         """Generuje meta tagi dla artykułu."""
-        return await self._generate(
+        return self._generate(
             text=article_text[:4000],
             system_prompt=META_TAGS_SYSTEM_PROMPT,
             response_schema=MetaTagsResponse,
             temperature=0.3,
         )
 
-    async def generate_seo_article(self, article_text: str) -> Dict:
+    def generate_seo_article(self, article_text: str) -> Dict:
         """Przepisuje artykuł pod kątem SEO."""
-        return await self._generate(
+        return self._generate(
             text=article_text,
             system_prompt=SEO_SYSTEM_PROMPT,
             response_schema=SEOArticleResponse,

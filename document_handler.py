@@ -5,12 +5,14 @@ Obsługa różnych formatów dokumentów (PDF, DOCX, DOC).
 
 import io
 import re
-import streamlit as st
+import logging
 from pathlib import Path
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 
 import fitz  # PyMuPDF
+
+logger = logging.getLogger(__name__)
 
 # Opcjonalne importy
 try:
@@ -135,8 +137,9 @@ class DocumentHandler:
                         'index': img_index
                     })
         except Exception as e:
-            st.warning(
-                f"Nie udało się wyekstraktować obrazów ze strony {page_index + 1}: {e}"
+            logger.warning(
+                "Nie udało się wyekstraktować obrazów ze strony %d: %s",
+                page_index + 1, e,
             )
         return images
 
@@ -153,7 +156,7 @@ class DocumentHandler:
                         'index': len(images)
                     })
         except Exception as e:
-            st.warning(f"Nie udało się wyekstraktować obrazów z DOCX: {e}")
+            logger.warning("Nie udało się wyekstraktować obrazów z DOCX: %s", e)
         return images
 
     def render_page_as_image(self, page_index: int) -> Optional[bytes]:
@@ -164,5 +167,7 @@ class DocumentHandler:
             pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
             return pix.tobytes("png")
         except Exception as e:
-            st.error(f"Błąd podczas renderowania strony {page_index + 1}: {e}")
+            logger.error(
+                "Błąd podczas renderowania strony %d: %s", page_index + 1, e
+            )
             return None
