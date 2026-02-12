@@ -1,0 +1,33 @@
+# Cloud Build — automatyczny deploy na Cloud Run
+# Użycie: gcloud builds submit --config cloudbuild.yaml
+
+steps:
+  # Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/redaktor-ai', '.']
+
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/redaktor-ai']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'redaktor-ai'
+      - '--image=gcr.io/$PROJECT_ID/redaktor-ai'
+      - '--region=europe-central2'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--memory=1Gi'
+      - '--cpu=1'
+      - '--timeout=300'
+      - '--set-env-vars=GOOGLE_API_KEY=${_GOOGLE_API_KEY}'
+
+images:
+  - 'gcr.io/$PROJECT_ID/redaktor-ai'
+
+substitutions:
+  _GOOGLE_API_KEY: ''  # Podaj przy uruchomieniu: --substitutions=_GOOGLE_API_KEY=twój-klucz
