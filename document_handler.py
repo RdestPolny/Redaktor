@@ -91,13 +91,86 @@ class DocumentHandler:
     def get_page_content(self, page_index: int) -> PageContent:
         if self.file_type == 'pdf':
             page = self._document.load_page(page_index)
-            text = page.get_text("text")
+            text = self._extract_text_with_layout(page)
             images = self._extract_images_from_pdf_page(page_index)
             return PageContent(page_index + 1, text, images)
         elif self.file_type == 'docx':
             return self._get_docx_page_content(page_index)
         elif self.file_type == 'doc':
             return self._get_doc_page_content(page_index)
+
+    def _extract_text_with_layout(self, page) -> str:
+        """Ekstrakcja tekstu z uwzględnieniem layoutu wielokolumnowego.
+
+        Zamiast page.get_text('text'), używamy bloków z bounding-boxami,
+        wykrywamy kolumny na podstawie pozycji X i sortujemy tekst
+        w kolejności: kolumna lewa→prawa, w kolumnie góra→dół.
+        """
+        blocks = page.get_text("blocks")
+        # Filtruj tylko bloki tekstowe (typ 0), pomiń obrazy (typ 1)
+        text_blocks = [b for b in blocks if b[6] == 0]
+
+        if not text_blocks:
+            return ""
+
+        if len(text_blocks) == 1:
+            return text_blocks[0][4].strip()
+
+        # Wykryj kolumny na podstawie pozycji X bloków
+        columns = self._detect_columns(text_blocks)
+
+        # Sortuj kolumny od lewej do prawej
+        columns.sort(key=lambda col: min(b[0] for b in col))
+
+        # Buduj tekst: kolumna po kolumnie, wewnątrz sortując po Y
+        result_parts = []
+        for col_blocks in columns:
+            col_blocks.sort(key=lambda b: b[1])  # sortuj po y0
+            for block in col_blocks:
+                text = block[4].strip()
+                if text:
+                    result_parts.append(text)
+
+        return "\n\n".join(result_parts)
+
+    @staticmethod
+    def _detect_columns(text_blocks: list) -> list:
+        """Grupuje bloki tekstowe w kolumny na podstawie pozycji X.
+
+        Algorytm: sortujemy środki X bloków, łączymy bloki w kolumny
+        jeśli ich środki X są bliżej niż próg (10% szerokości strony).
+        """
+        if not text_blocks:
+            return []
+
+        # Oblicz szerokość strony z bloków
+        all_x0 = [b[0] for b in text_blocks]
+        all_x1 = [b[2] for b in text_blocks]
+        page_width = max(all_x1) - min(all_x0) if all_x1 else 600
+        threshold = page_width * 0.1  # 10% szerokości jako próg
+
+        # Oblicz środek X dla każdego bloku
+        blocks_with_cx = [(b, (b[0] + b[2]) / 2) for b in text_blocks]
+        blocks_with_cx.sort(key=lambda item: item[1])
+
+        # Grupowanie zachłanne: bloki z podobną pozycją X → ta sama kolumna
+        columns = []
+        current_col = [blocks_with_cx[0][0]]
+        current_cx = blocks_with_cx[0][1]
+
+        for block, cx in blocks_with_cx[1:]:
+            if abs(cx - current_cx) <= threshold:
+                current_col.append(block)
+                # Aktualizuj środek kolumny jako średnią
+                total = len(current_col)
+                current_cx = (current_cx * (total - 1) + cx) / total
+            else:
+                columns.append(current_col)
+                current_col = [block]
+                current_cx = cx
+
+        columns.append(current_col)
+        return columns
 
     def _get_docx_page_content(self, page_index: int) -> PageContent:
         all_paragraphs = self._document.paragraphs

@@ -244,36 +244,98 @@ async function startProcessing() {
     }
 
     state.processing = true;
-    showLoading('Przetwarzanie dokumentu przez Gemini AI...');
+
+    // Tryb artykułowy — stary endpoint (nie streamuje)
+    if (mode === 'article') {
+        showLoading('Przetwarzanie artykułów przez Gemini AI...');
+        try {
+            const resp = await fetch('/process', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json();
+            if (data.error) {
+                showToast(data.error, 'error');
+            } else {
+                showToast(data.message || 'Przetwarzanie zakończone!', 'success');
+                if (data.results && data.results.length > 0) {
+                    goToPage(data.results[0].pages[0]);
+                }
+                loadPage(state.currentPage);
+            }
+        } catch (err) {
+            showToast('Błąd: ' + err.message, 'error');
+        } finally {
+            state.processing = false;
+            hideLoading();
+        }
+        return;
+    }
+
+    // Tryby all / range — SSE streaming z równoległym przetwarzaniem
+    showProgress(0, 'Rozpoczynanie przetwarzania...');
 
     try {
-        const resp = await fetch('/process', {
+        const resp = await fetch('/process-stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
 
-        const data = await resp.json();
+        if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({}));
+            showToast(errData.error || 'Błąd serwera', 'error');
+            state.processing = false;
+            hideProgress();
+            return;
+        }
 
-        if (data.error) {
-            showToast(data.error, 'error');
-        } else {
-            showToast(data.message || 'Przetwarzanie zakończone!', 'success');
-            // Navigate to first processed page
-            if (mode === 'range') {
-                goToPage(body.start_page);
-            } else if (mode === 'article' && data.results && data.results.length > 0) {
-                goToPage(data.results[0].pages[0]);
-            } else {
-                goToPage(1);
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // zachowaj niepełną linię
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    const event = JSON.parse(line.slice(6));
+
+                    if (event.error && !event.page_number) {
+                        showToast(event.error, 'error');
+                        continue;
+                    }
+
+                    if (event.done) {
+                        showProgress(100, event.message);
+                        showToast(event.message, 'success');
+                        goToPage(body.start_page || 1);
+                        loadPage(state.currentPage);
+                        continue;
+                    }
+
+                    // Aktualizacja postępu
+                    const pct = event.progress || 0;
+                    const statusText = `Strona ${event.page_number}: ${event.type.toUpperCase()} (${event.completed}/${event.total})`;
+                    showProgress(pct, statusText);
+
+                } catch (parseErr) {
+                    // Pomiń niepoprawne linie
+                }
             }
-            loadPage(state.currentPage);
         }
     } catch (err) {
         showToast('Błąd: ' + err.message, 'error');
     } finally {
         state.processing = false;
-        hideLoading();
+        setTimeout(hideProgress, 2000);
     }
 }
 
@@ -373,6 +435,22 @@ function showLoading(text) {
 
 function hideLoading() {
     document.getElementById('loading-overlay').classList.add('hidden');
+}
+
+function showProgress(percentage, statusText) {
+    const progressBar = document.getElementById('progress-bar');
+    const progressFill = document.getElementById('progress-fill');
+    const progressText = document.getElementById('progress-text');
+
+    progressBar.classList.remove('hidden');
+    progressFill.style.width = `${percentage}%`;
+    progressText.textContent = statusText || `${percentage}%`;
+}
+
+function hideProgress() {
+    document.getElementById('progress-bar').classList.add('hidden');
+    document.getElementById('progress-fill').style.width = '0%';
+    document.getElementById('progress-text').textContent = '0%';
 }
 
 function showToast(message, type = 'info') {

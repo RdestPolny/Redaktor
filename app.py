@@ -8,11 +8,13 @@ import io
 import base64
 import json
 import logging
+import threading
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import (
     Flask, request, jsonify, render_template,
-    send_file, session,
+    send_file, session, Response, stream_with_context,
 )
 
 from document_handler import DocumentHandler, DOCX_AVAILABLE, MAMMOTH_AVAILABLE
@@ -194,13 +196,7 @@ def process_pages():
     ai = _get_ai()
 
     try:
-        if mode == 'all':
-            start_idx = 0
-            end_idx = _state['total_pages'] - 1
-        elif mode == 'range':
-            start_idx = data.get('start_page', 1) - 1
-            end_idx = data.get('end_page', _state['total_pages']) - 1
-        elif mode == 'article':
+        if mode == 'article':
             groups_input = data.get('groups', '')
             groups = parse_page_groups(groups_input, _state['total_pages'])
             results = []
@@ -234,31 +230,118 @@ def process_pages():
                 message=f"Przetworzono {len(groups)} artykuł(ów).",
             )
         else:
-            return jsonify(error=f"Nieznany tryb: {mode}"), 400
-
-        # Przetwarzanie strona po stronie (all / range)
-        processed = []
-        for i in range(start_idx, end_idx + 1):
-            content = doc.get_page_content(i)
-            result = ai.process_page(content)
-            _state['extracted_pages'][i] = result
-            processed.append({
-                'page_number': i + 1,
-                'type': result.get('type', 'nieznany'),
-            })
-
-        return jsonify(
-            ok=True,
-            mode=mode,
-            processed=processed,
-            message=f"Przetworzono {len(processed)} stron.",
-        )
+            # Dla trybów 'all' i 'range' przekieruj na SSE stream
+            return jsonify(
+                error="Użyj endpointu /process-stream dla tego trybu."
+            ), 400
 
     except ValueError as e:
         return jsonify(error=str(e)), 400
     except Exception as e:
         logger.error("Processing error: %s", e)
         return jsonify(error=str(e)), 500
+
+
+# Maksymalna liczba równoległych zapytań do AI
+MAX_PARALLEL_WORKERS = 4
+
+
+@app.route('/process-stream', methods=['POST'])
+def process_stream():
+    """Przetwarza strony równolegle i streamuje postęp przez SSE."""
+    doc = _state.get('document')
+    if not doc:
+        return Response(
+            f"data: {json.dumps({'error': 'Brak dokumentu.'})}\n\n",
+            mimetype='text/event-stream',
+        )
+
+    data = request.get_json()
+    mode = data.get('mode', 'all')
+
+    if mode == 'all':
+        start_idx = 0
+        end_idx = _state['total_pages'] - 1
+    elif mode == 'range':
+        start_idx = data.get('start_page', 1) - 1
+        end_idx = data.get('end_page', _state['total_pages']) - 1
+    else:
+        return Response(
+            f"data: {json.dumps({'error': f'Nieznany tryb: {mode}'})}\n\n",
+            mimetype='text/event-stream',
+        )
+
+    total = end_idx - start_idx + 1
+
+    # Przygotuj zawartości stron synchronicznie (I/O z PDF — szybkie)
+    page_contents = {}
+    for i in range(start_idx, end_idx + 1):
+        page_contents[i] = doc.get_page_content(i)
+
+    def generate():
+        lock = threading.Lock()
+        completed = [0]
+
+        def process_one(page_idx):
+            """Przetwarza jedną stronę — wywoływane w wątku."""
+            ai = _get_ai()  # Nowa instancja per wątek
+            content = page_contents[page_idx]
+            result = ai.process_page(content)
+            with lock:
+                _state['extracted_pages'][page_idx] = result
+                completed[0] += 1
+            return page_idx, result
+
+        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_WORKERS) as executor:
+            futures = {
+                executor.submit(process_one, i): i
+                for i in range(start_idx, end_idx + 1)
+            }
+
+            for future in as_completed(futures):
+                page_idx = futures[future]
+                try:
+                    _, result = future.result()
+                    event = {
+                        'page_number': page_idx + 1,
+                        'type': result.get('type', 'nieznany'),
+                        'completed': completed[0],
+                        'total': total,
+                        'progress': round(completed[0] / total * 100),
+                    }
+                except Exception as e:
+                    logger.error("Błąd strony %d: %s", page_idx + 1, e)
+                    with lock:
+                        completed[0] += 1
+                    event = {
+                        'page_number': page_idx + 1,
+                        'type': 'błąd',
+                        'error': str(e),
+                        'completed': completed[0],
+                        'total': total,
+                        'progress': round(completed[0] / total * 100),
+                    }
+
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        # Końcowy event
+        done_event = {
+            'done': True,
+            'message': f"Przetworzono {total} stron.",
+            'completed': total,
+            'total': total,
+            'progress': 100,
+        }
+        yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        },
+    )
 
 
 @app.route('/process-page/<int:page_num>', methods=['POST'])

@@ -85,7 +85,13 @@ DOZWOLONE MODYFIKACJE STRUKTURALNE:
 WAŻNE:
 - Ustaw pole "type" na "ARTYKUŁ" jeśli treść jest merytorycznym tekstem (artykuł, esej, raport itp.).
 - Ustaw pole "type" na "REKLAMA" jeśli to reklama, ogłoszenie, spis treści, lub strona z samymi grafikami.
-- Pole "formatted_text" zawiera sformatowany tekst w Markdown."""
+- Pole "formatted_text" zawiera sformatowany tekst w Markdown.
+
+UWAGA O FORMACIE WEJŚCIOWYM:
+- Tekst pochodzi z automatycznej ekstrakcji PDF, w tym z dokumentów wielokolumnowych.
+- Mogą wystąpić artefakty layoutu: powtórzenia nagłówków/stopek, fragmenty tekstu poza kontekstem, lub zakłócona kolejność akapitów.
+- Jeśli wykryjesz oczywiste artefakty ekstrakcji (np. wielokrotnie powtórzony nagłówek redakcyjny, numery stron, stopki), pomiń je.
+- Staraj się zrekonstruować logiczny przepływ tekstu, nawet jeśli kolejność akapitów jest zaburzona."""
 
 META_TAGS_SYSTEM_PROMPT = """Jesteś ekspertem SEO. Na podstawie poniższego tekstu artykułu, wygeneruj chwytliwy meta title i zwięzły meta description.
 
