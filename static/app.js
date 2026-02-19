@@ -316,7 +316,6 @@ async function startProcessing() {
                     if (event.done) {
                         showProgress(100, event.message);
                         showToast(event.message, 'success');
-                        goToPage(body.start_page || 1);
                         loadPage(state.currentPage);
                         continue;
                     }
@@ -340,22 +339,55 @@ async function startProcessing() {
 }
 
 async function rerollPage() {
-    showLoading(`Ponowne przetwarzanie strony ${state.currentPage}...`);
-
+    // Check if current page is part of a group article
+    let groupPages = null;
     try {
-        const resp = await fetch(`/process-page/${state.currentPage}`, { method: 'POST' });
-        const data = await resp.json();
-
-        if (data.error) {
-            showToast(data.error, 'error');
-        } else {
-            showToast('Strona przetworzona ponownie!', 'success');
-            loadPage(state.currentPage);
+        const resultResp = await fetch(`/page/${state.currentPage}/result`);
+        const resultData = await resultResp.json();
+        if (resultData.processed && resultData.group_pages && resultData.group_pages.length > 1) {
+            groupPages = resultData.group_pages;
         }
-    } catch (err) {
-        showToast('Błąd: ' + err.message, 'error');
-    } finally {
-        hideLoading();
+    } catch { /* ignore */ }
+
+    if (groupPages) {
+        // Reprocess entire article group
+        const groupStr = groupPages.join(',');
+        showLoading(`Ponowne przetwarzanie artykułu (strony ${groupStr})...`);
+        try {
+            const resp = await fetch('/process', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: 'article', groups: groupStr }),
+            });
+            const data = await resp.json();
+            if (data.error) {
+                showToast(data.error, 'error');
+            } else {
+                showToast('Artykuł przetworzony ponownie!', 'success');
+                loadPage(state.currentPage);
+            }
+        } catch (err) {
+            showToast('Błąd: ' + err.message, 'error');
+        } finally {
+            hideLoading();
+        }
+    } else {
+        // Single page reroll with context
+        showLoading(`Ponowne przetwarzanie strony ${state.currentPage}...`);
+        try {
+            const resp = await fetch(`/process-page/${state.currentPage}`, { method: 'POST' });
+            const data = await resp.json();
+            if (data.error) {
+                showToast(data.error, 'error');
+            } else {
+                showToast('Strona przetworzona ponownie!', 'success');
+                loadPage(state.currentPage);
+            }
+        } catch (err) {
+            showToast('Błąd: ' + err.message, 'error');
+        } finally {
+            hideLoading();
+        }
     }
 }
 
@@ -381,11 +413,36 @@ async function generateMeta() {
     }
 }
 
-async function generateSeo() {
-    showLoading('Optymalizacja SEO... To może potrwać dłuższą chwilę.');
+function generateSeo() {
+    // Pre-fill with current page number
+    const pagesInput = document.getElementById('seo-pages');
+    pagesInput.value = String(state.currentPage);
+    document.getElementById('seo-keywords').value = '';
+    document.getElementById('seo-modal').classList.remove('hidden');
+}
+
+function closeSeoModal() {
+    document.getElementById('seo-modal').classList.add('hidden');
+}
+
+async function submitSeoGeneration() {
+    const pages = document.getElementById('seo-pages').value.trim();
+    const keywords = document.getElementById('seo-keywords').value.trim();
+
+    if (!pages) {
+        showToast('Podaj numery stron źródłowych.', 'error');
+        return;
+    }
+
+    closeSeoModal();
+    showLoading('Analiza odbiorcy i optymalizacja SEO... To może potrwać dłuższą chwilę.');
 
     try {
-        const resp = await fetch(`/seo/${state.currentPage}`, { method: 'POST' });
+        const resp = await fetch(`/seo/${state.currentPage}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source_pages: pages, keywords: keywords }),
+        });
         const data = await resp.json();
 
         if (data.error) {

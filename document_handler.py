@@ -99,12 +99,26 @@ class DocumentHandler:
         elif self.file_type == 'doc':
             return self._get_doc_page_content(page_index)
 
+    # Wzorce do filtrowania nagłówków/stopek
+    _HEADER_FOOTER_PATTERNS = re.compile(
+        r'^(\d{1,3})\s*$'             # sam numer strony
+        r'|^www\.\S+\.\S+'            # URL jak www.audio.com.pl
+        r'|^https?://\S+'             # pełny URL
+        r'|^\d{1,3}\s+www\.\S+'       # "41 www.audio.com.pl"
+        r'|^str\.\s*\d+'              # "str. 41"
+        r'|^AUDIO\s'                  # nagłówki redakcyjne
+        , re.IGNORECASE | re.MULTILINE
+    )
+
     def _extract_text_with_layout(self, page) -> str:
         """Ekstrakcja tekstu z uwzględnieniem layoutu wielokolumnowego.
 
-        Zamiast page.get_text('text'), używamy bloków z bounding-boxami,
-        wykrywamy kolumny na podstawie pozycji X i sortujemy tekst
-        w kolejności: kolumna lewa→prawa, w kolumnie góra→dół.
+        Algorytm:
+        1. Pobierz bloki tekstowe z bounding-boxami
+        2. Odfiltruj nagłówki/stopki (marginesy górny/dolny)
+        3. Wykryj kolumny za pomocą gap-based clustering
+        4. Oddziel podpisy do zdjęć od tekstu głównego
+        5. Sortuj: podpisy (góra→dół), potem kolumny (lewa→prawa, góra→dół)
         """
         blocks = page.get_text("blocks")
         # Filtruj tylko bloki tekstowe (typ 0), pomiń obrazy (typ 1)
@@ -116,14 +130,66 @@ class DocumentHandler:
         if len(text_blocks) == 1:
             return text_blocks[0][4].strip()
 
-        # Wykryj kolumny na podstawie pozycji X bloków
-        columns = self._detect_columns(text_blocks)
+        # Wymiary strony
+        page_rect = page.rect
+        page_height = page_rect.height
+        page_width = page_rect.width
 
-        # Sortuj kolumny od lewej do prawej
+        # 1. Filtruj nagłówki/stopki (górne/dolne 6% strony z typowymi wzorcami)
+        margin_top = page_height * 0.06
+        margin_bottom = page_height * 0.94
+        filtered_blocks = []
+        for b in text_blocks:
+            text = b[4].strip()
+            if not text:
+                continue
+            # Blok w marginesie górnym lub dolnym
+            is_in_margin = (b[1] < margin_top) or (b[3] > margin_bottom)
+            if is_in_margin and self._is_header_footer(text):
+                continue
+            filtered_blocks.append(b)
+
+        if not filtered_blocks:
+            # Jeśli wszystko odfiltrowane, zwróć oryginalne bloki
+            filtered_blocks = [b for b in text_blocks if b[4].strip()]
+
+        if len(filtered_blocks) == 1:
+            return filtered_blocks[0][4].strip()
+
+        # 2. Pobierz pozycje obrazów na stronie (do detekcji podpisów)
+        image_rects = self._get_image_rects(page)
+
+        # 3. Oddziel podpisy od tekstu głównego
+        captions = []
+        body_blocks = []
+        for b in filtered_blocks:
+            text = b[4].strip()
+            if self._is_caption(b, text, image_rects, page_width):
+                captions.append(b)
+            else:
+                body_blocks.append(b)
+
+        if not body_blocks:
+            body_blocks = filtered_blocks
+            captions = []
+
+        # 4. Wykryj kolumny w blokach głównych
+        columns = self._detect_columns(body_blocks, page_width)
+
+        # 5. Sortuj kolumny od lewej do prawej
         columns.sort(key=lambda col: min(b[0] for b in col))
 
-        # Buduj tekst: kolumna po kolumnie, wewnątrz sortując po Y
+        # 6. Buduj tekst wynikowy
         result_parts = []
+
+        # Najpierw podpisy — posortowane po pozycji Y (góra→dół)
+        captions.sort(key=lambda b: b[1])
+        for block in captions:
+            text = block[4].strip()
+            if text:
+                result_parts.append(text)
+
+        # Potem tekst główny — kolumna po kolumnie
         for col_blocks in columns:
             col_blocks.sort(key=lambda b: b[1])  # sortuj po y0
             for block in col_blocks:
@@ -133,43 +199,111 @@ class DocumentHandler:
 
         return "\n\n".join(result_parts)
 
-    @staticmethod
-    def _detect_columns(text_blocks: list) -> list:
-        """Grupuje bloki tekstowe w kolumny na podstawie pozycji X.
+    def _is_header_footer(self, text: str) -> bool:
+        """Sprawdza czy tekst to typowy nagłówek/stopka strony."""
+        text = text.strip()
+        if len(text) > 100:
+            return False  # za długi na nagłówek/stopkę
+        return bool(self._HEADER_FOOTER_PATTERNS.match(text))
 
-        Algorytm: sortujemy środki X bloków, łączymy bloki w kolumny
-        jeśli ich środki X są bliżej niż próg (10% szerokości strony).
+    @staticmethod
+    def _get_image_rects(page) -> list:
+        """Zwraca listę prostokątów (x0, y0, x1, y1) obrazów na stronie."""
+        rects = []
+        try:
+            for img in page.get_images(full=True):
+                xref = img[0]
+                for inst in page.get_image_rects(xref):
+                    rects.append((inst.x0, inst.y0, inst.x1, inst.y1))
+        except Exception:
+            pass
+        return rects
+
+    @staticmethod
+    def _is_caption(block, text: str, image_rects: list,
+                    page_width: float) -> bool:
+        """Sprawdza czy blok to podpis do zdjęcia.
+
+        Kryteria: krótki tekst (< 200 znaków), blisko obrazu (w pionie),
+        i nie rozciąga się na pełną szerokość strony.
+        """
+        if len(text) > 200:
+            return False
+
+        block_width = block[2] - block[0]
+        # Podpis zwykle nie zajmuje więcej niż ~55% szerokości strony
+        if block_width > page_width * 0.55:
+            return False
+
+        # Sprawdź bliskość pionową do obrazu (w granicach 30px)
+        proximity = 30
+        b_y0, b_y1 = block[1], block[3]
+        for img_rect in image_rects:
+            img_y0, img_y1 = img_rect[1], img_rect[3]
+            # Podpis tuż pod lub tuż nad obrazem
+            if abs(b_y0 - img_y1) < proximity or abs(img_y0 - b_y1) < proximity:
+                return True
+
+        return False
+
+    @staticmethod
+    def _detect_columns(text_blocks: list, page_width: float = None) -> list:
+        """Grupuje bloki tekstowe w kolumny za pomocą gap-based clustering.
+
+        Zamiast stałego progu procentowego, szukamy naturalnych przerw
+        (gaps) w pozycjach X-center bloków. Duża przerwa = granica kolumny.
+        To działa zarówno dla 2-, jak i 3-kolumnowych layoutów.
         """
         if not text_blocks:
             return []
 
-        # Oblicz szerokość strony z bloków
-        all_x0 = [b[0] for b in text_blocks]
-        all_x1 = [b[2] for b in text_blocks]
-        page_width = max(all_x1) - min(all_x0) if all_x1 else 600
-        threshold = page_width * 0.1  # 10% szerokości jako próg
+        if len(text_blocks) == 1:
+            return [text_blocks[:]]
+
+        # Oblicz szerokość strony jeśli nie podana
+        if page_width is None:
+            all_x0 = [b[0] for b in text_blocks]
+            all_x1 = [b[2] for b in text_blocks]
+            page_width = max(all_x1) - min(all_x0) if all_x1 else 600
 
         # Oblicz środek X dla każdego bloku
         blocks_with_cx = [(b, (b[0] + b[2]) / 2) for b in text_blocks]
         blocks_with_cx.sort(key=lambda item: item[1])
 
-        # Grupowanie zachłanne: bloki z podobną pozycją X → ta sama kolumna
+        # Oblicz przerwy (gaps) między kolejnymi mid-X
+        cx_values = [cx for _, cx in blocks_with_cx]
+
+        if len(cx_values) < 2:
+            return [text_blocks[:]]
+
+        gaps = []
+        for i in range(1, len(cx_values)):
+            gap = cx_values[i] - cx_values[i - 1]
+            gaps.append((gap, i))
+
+        # Mediana przerw — przerwy znacznie większe od mediany to granice kolumn
+        gap_values = sorted([g for g, _ in gaps])
+        median_gap = gap_values[len(gap_values) // 2]
+
+        # Próg: przerwa musi być > 5% szerokości strony I > 3× mediana
+        min_gap = max(page_width * 0.05, median_gap * 3, 20)
+
+        # Znajdź indeksy podziałów
+        split_indices = [0]
+        for gap, idx in gaps:
+            if gap >= min_gap:
+                split_indices.append(idx)
+        split_indices.append(len(blocks_with_cx))
+
+        # Podziel bloki na kolumny
         columns = []
-        current_col = [blocks_with_cx[0][0]]
-        current_cx = blocks_with_cx[0][1]
+        for i in range(len(split_indices) - 1):
+            start = split_indices[i]
+            end = split_indices[i + 1]
+            col = [b for b, _ in blocks_with_cx[start:end]]
+            if col:
+                columns.append(col)
 
-        for block, cx in blocks_with_cx[1:]:
-            if abs(cx - current_cx) <= threshold:
-                current_col.append(block)
-                # Aktualizuj środek kolumny jako średnią
-                total = len(current_col)
-                current_cx = (current_cx * (total - 1) + cx) / total
-            else:
-                columns.append(current_col)
-                current_col = [block]
-                current_cx = cx
-
-        columns.append(current_col)
         return columns
 
     def _get_docx_page_content(self, page_index: int) -> PageContent:

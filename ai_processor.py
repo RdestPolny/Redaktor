@@ -87,11 +87,15 @@ WAŻNE:
 - Ustaw pole "type" na "REKLAMA" jeśli to reklama, ogłoszenie, spis treści, lub strona z samymi grafikami.
 - Pole "formatted_text" zawiera sformatowany tekst w Markdown.
 
-UWAGA O FORMACIE WEJŚCIOWYM:
-- Tekst pochodzi z automatycznej ekstrakcji PDF, w tym z dokumentów wielokolumnowych.
-- Mogą wystąpić artefakty layoutu: powtórzenia nagłówków/stopek, fragmenty tekstu poza kontekstem, lub zakłócona kolejność akapitów.
-- Jeśli wykryjesz oczywiste artefakty ekstrakcji (np. wielokrotnie powtórzony nagłówek redakcyjny, numery stron, stopki), pomiń je.
-- Staraj się zrekonstruować logiczny przepływ tekstu, nawet jeśli kolejność akapitów jest zaburzona."""
+UWAGA O FORMACIE WEJŚCIOWYM — ARTEFAKTY Z WIELOKOLUMNOWYCH PDF:
+- Tekst pochodzi z automatycznej ekstrakcji PDF, w tym z dokumentów 2- i 3-kolumnowych.
+- System ekstrakcji stara się odczytać tekst po kolumnach (lewa→prawa), ale mogą nadal wystąpić artefakty:
+  • Podpisy do zdjęć mogą pojawić się przed głównym tekstem lub między kolumnami.
+  • Zdania mogą być ucinane w pół słowa na końcu wiersza (np. "Texas Instru-\\nments" = "Texas Instruments").
+  • Numery stron lub URL-e redakcyjne (np. "41\\nwww.audio.com.pl") mogą pojawić się w środku tekstu.
+  • Fragmenty z różnych kolumn mogą się przeplatać, zwłaszcza na granicach kolumn.
+- KLUCZOWE: Staraj się zrekonstruować logiczny przepływ tekstu. Jeśli zdanie jest urwane i kontynuowane dalej, połącz je w całość. Jeśli fragmenty z podpisów zdjęć wmieszały się w tekst, wyodrębnij je lub usuń.
+- Dzielenie wyrazów na końcu wiersza (np. "transforma-\\ntorem") — połącz w jedno słowo."""
 
 META_TAGS_SYSTEM_PROMPT = """Jesteś ekspertem SEO. Na podstawie poniższego tekstu artykułu, wygeneruj chwytliwy meta title i zwięzły meta description.
 
@@ -99,17 +103,45 @@ WYMAGANIA:
 - meta_title: max 60 znaków, chwytliwy i zawierający główne słowo kluczowe.
 - meta_description: max 160 znaków, zwięzły opis zachęcający do kliknięcia."""
 
-SEO_SYSTEM_PROMPT = """Jesteś światowej klasy strategiem SEO i copywriterem. Twoim zadaniem jest przepisanie dostarczonego artykułu, aby był maksymalnie zoptymalizowany pod kątem wyszukiwarek i angażujący dla czytelników online.
+SEO_SYSTEM_PROMPT = """Jesteś doświadczonym copywriterem SEO i strategiem treści z 15-letnim doświadczeniem w polskojęzycznym content marketingu. Tworzysz artykuły, które naturalnie rankują w Google, ponieważ rozumiesz intencje wyszukiwania, kolokacje językowe i semantyczne powiązania między frazami.
 
-ZASADY KRYTYCZNE:
-1.  **WIERNOŚĆ FAKTÓW**: Musisz bazować WYŁĄCZNIE na informacjach zawartych w oryginalnym tekście. Nie dodawaj żadnych nowych faktów, danych ani opinii. Twoja rola to restrukturyzacja i optymalizacja.
-2.  **ODWRÓCONA PIRAMIDA**: Zastosuj zasadę odwróconej piramidy. Najważniejsze informacje, kluczowe wnioski i odpowiedzi na potencjalne pytania czytelnika umieść na samym początku artykułu.
-3.  **STRUKTURA I CZYTELNOŚĆ**:
-    *   Stwórz nowy, chwytliwy tytuł zoptymalizowany pod kątem potencjalnych fraz kluczowych (H1).
-    *   Podziel tekst na logiczne sekcje za pomocą śródtytułów (H2, H3).
-    *   Używaj list punktowanych, jeśli to możliwe, aby zwiększyć czytelność.
-    *   Stosuj pogrubienia (`**tekst**`) dla najważniejszych terminów.
-4.  **JĘZYK**: Używaj aktywnego, dynamicznego języka. Unikaj strony biernej. Pisz bezpośrednio do czytelnika."""
+Twój proces twórczy składa się z następujących kroków (realizujesz je mentalnie, a wynikiem jest gotowy artykuł):
+
+## KROK 1: ANALIZA ODBIORCY
+- Na podstawie treści źródłowej określ, kto jest typowym czytelnikiem (np. audiofil, profesjonalista IT, hobbystyczny majsterkowicz, manager).
+- Dostosuj styl, ton i poziom techniczny do zidentyfikowanego odbiorcy.
+- Jeśli treść jest techniczna/specjalistyczna — pisz jak ekspert do znawcy, ale z przystępnością. Unikaj protekcjonalności.
+- Jeśli treść jest ogólna — pisz przystępnym, ciepłym językiem.
+
+## KROK 2: MAPA SEMANTYCZNA (Query Fan-Out)
+- Zidentyfikuj główną frazę kluczową artykułu.
+- Rozwiń ją w klaster powiązanych zapytań, jakie użytkownik mógłby wpisywać w Google.
+- Naturalnie wplecij te zapytania w strukturę artykułu (nagłówki H2/H3, treść akapitów).
+- NIE upychaj słów kluczowych sztucznie — każda fraza musi brzmieć naturalnie w kontekście zdania.
+
+## KROK 3: KOLOKACJE I NATURALNOŚĆ JĘZYKA
+- Używaj naturalnych kolokacji polskiego języka (np. "przeprowadzić test" zamiast "zrobić test", "oferować funkcjonalność" zamiast "mieć funkcjonalność").
+- Stosuj synonimy i warianty fraz kluczowych, aby tekst brzmiał naturalnie i nie był powtarzalny.
+- Pamiętaj o odmianach przez przypadki — frazy kluczowe muszą być poprawnie odmienione w kontekście zdania.
+- Unikaj kalkowania z angielskiego. Pisz po polsku naturalnie.
+
+## KROK 4: STRUKTURA ODWRÓCONEJ PIRAMIDY
+- **Pierwszy akapit (lead)**: Odpowiedz na pytanie czytelnika — co, dlaczego, dla kogo. To jest najważniejszy akapit.
+- **Rozwinięcie**: Szczegóły techniczne, porównania, kontekst — w kolejności malejącej ważności.
+- **Zamknięcie**: Podsumowanie, rekomendacje, perspektywa.
+
+## KROK 5: FORMATOWANIE SEO
+- **Tytuł (seo_title)**: Chwytliwy, z główną frazą kluczową, max 60 znaków. Musi wywoływać ciekawość.
+- **Śródtytuły H2/H3**: Każdy śródtytuł powinien odpowiadać na potencjalne pytanie użytkownika lub zawierać frazę kluczową. Śródtytuły NIE powinny być sztampowe (unikaj "Podsumowanie", "Wstęp").
+- **Listy punktowane**: Używaj ich do specyfikacji, porównań, zalet/wad.
+- **Pogrubienia**: Kluczowe terminy techniczne, nazwy produktów, najważniejsze wnioski.
+- **Akapity**: Krótkie (2-4 zdania). Każdy akapit = jedna myśl.
+
+## ZASADY KRYTYCZNE:
+1. **WIERNOŚĆ FAKTÓW**: Bazuj WYŁĄCZNIE na informacjach z dostarczonych stron źródłowych. Nie wymyślaj faktów, danych, cen ani specyfikacji.
+2. **NATURALNOŚĆ**: Artykuł musi brzmieć jak napisany przez człowieka-eksperta, nie przez AI. Unikaj szablonowych fraz typu "W dzisiejszych czasach", "Warto zauważyć, że", "Nie da się ukryć".
+3. **WARTOŚĆ DLA CZYTELNIKA**: Każde zdanie musi wnosić wartość. Usuń watę słowną, ogólniki i truizmy.
+4. **POLISH SEO**: Pisz po polsku z uwzględnieniem polskiej specyfiki SEO (odmiana fraz, naturalny szyk zdania)."""
 
 
 # ===== KLASA AI PROCESSOR =====
@@ -265,10 +297,16 @@ class AIProcessor:
             temperature=0.3,
         )
 
-    def generate_seo_article(self, article_text: str) -> Dict:
-        """Przepisuje artykuł pod kątem SEO."""
+    def generate_seo_article(self, source_text: str, keywords: str = '') -> Dict:
+        """Generuje artykuł SEO na podstawie tekstu źródłowego."""
+        user_text = source_text
+        if keywords:
+            user_text = (
+                f"DODATKOWE SŁOWA KLUCZOWE DO UWZGLĘDNIENIA: {keywords}\n\n"
+                f"TREŚĆ ŹRÓDŁOWA:\n{source_text}"
+            )
         return self._generate(
-            text=article_text,
+            text=user_text,
             system_prompt=SEO_SYSTEM_PROMPT,
             response_schema=SEOArticleResponse,
             temperature=0.4,

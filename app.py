@@ -405,15 +405,42 @@ def generate_meta(page_num):
 
 @app.route('/seo/<int:page_num>', methods=['POST'])
 def generate_seo(page_num):
-    """Generuje wersję SEO."""
-    page_index = page_num - 1
-    result = _state['extracted_pages'][page_index]
+    """Generuje wersję SEO na podstawie wybranych stron źródłowych."""
+    doc = _state.get('document')
+    if not doc:
+        return jsonify(error="Brak dokumentu."), 400
 
-    if not result or 'raw_markdown' not in result:
-        return jsonify(error="Brak artykułu do analizy."), 400
+    data = request.get_json() or {}
+    source_pages_input = data.get('source_pages', str(page_num))
+    keywords = data.get('keywords', '')
+
+    # Parsuj strony źródłowe
+    try:
+        source_groups = parse_page_groups(source_pages_input, _state['total_pages'])
+        source_page_nums = []
+        for group in source_groups:
+            source_page_nums.extend(group)
+        source_page_nums = sorted(set(source_page_nums))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+
+    # Zbierz tekst ze stron źródłowych
+    # Preferuj przetworzony tekst (raw_markdown), ale fallback na surowy
+    source_parts = []
+    for pn in source_page_nums:
+        pi = pn - 1
+        result = _state['extracted_pages'][pi] if pi < len(_state['extracted_pages']) else None
+        if result and 'raw_markdown' in result:
+            source_parts.append(f"--- STRONA {pn} (przetworzona) ---\n{result['raw_markdown']}")
+        else:
+            content = doc.get_page_content(pi)
+            source_parts.append(f"--- STRONA {pn} (surowa) ---\n{content.text}")
+
+    source_text = "\n\n".join(source_parts)
 
     ai = _get_ai()
-    seo = ai.generate_seo_article(result['raw_markdown'])
+    seo = ai.generate_seo_article(source_text, keywords=keywords)
+    page_index = page_num - 1
     _state['seo_articles'][page_index] = seo
 
     return jsonify(seo)

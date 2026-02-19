@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="pl">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,6 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
+
 <body>
     <!-- HEADER -->
     <header class="header">
@@ -143,6 +145,30 @@
         </div>
     </section>
 
+    <!-- SEO MODAL -->
+    <div id="seo-modal" class="modal-overlay hidden">
+        <div class="modal-box">
+            <h3>🚀 Generuj artykuł SEO</h3>
+            <p class="modal-description">Podaj numery stron, na podstawie których ma powstać artykuł zoptymalizowany pod
+                SEO.</p>
+            <div class="modal-field">
+                <label for="seo-pages">Strony źródłowe:</label>
+                <input type="text" id="seo-pages" placeholder="np. 1-3, 5, 7-10" class="input-groups">
+                <small class="modal-hint">Wpisz numery lub zakresy stron oddzielone przecinkami</small>
+            </div>
+            <div class="modal-field">
+                <label for="seo-keywords">Słowa kluczowe (opcjonalnie):</label>
+                <input type="text" id="seo-keywords" placeholder="np. streamer sieciowy, DAC, audio hi-fi"
+                    class="input-groups">
+                <small class="modal-hint">Dodatkowe frazy kluczowe do uwzględnienia w artykule</small>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeSeoModal()">Anuluj</button>
+                <button class="btn btn-primary" onclick="submitSeoGeneration()">🚀 Generuj</button>
+            </div>
+        </div>
+    </div>
+
     <!-- LOADING OVERLAY -->
     <div id="loading-overlay" class="loading-overlay hidden">
         <div class="loading-box">
@@ -156,4 +182,5 @@
 
     <script src="/static/app.js"></script>
 </body>
+
 </html>
