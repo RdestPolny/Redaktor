@@ -12,7 +12,17 @@ const state = {
     fileType: null,
     projectName: null,
     processing: false,
+    _sseAbort: null,  // AbortController dla aktywnego SSE streamu
 };
+
+// ===== TAB VISIBILITY HANDLER =====
+
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && state.totalPages > 0) {
+        // Odśwież aktualną stronę po powrocie z tła
+        loadPage(state.currentPage);
+    }
+});
 
 // ===== UPLOAD =====
 
@@ -276,11 +286,15 @@ async function startProcessing() {
     // Tryby all / range — SSE streaming z równoległym przetwarzaniem
     showProgress(0, 'Rozpoczynanie przetwarzania...');
 
+    const abortCtrl = new AbortController();
+    state._sseAbort = abortCtrl;
+
     try {
         const resp = await fetch('/process-stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
+            signal: abortCtrl.signal,
         });
 
         if (!resp.ok) {
@@ -295,44 +309,55 @@ async function startProcessing() {
         const decoder = new TextDecoder();
         let buffer = '';
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop(); // zachowaj niepełną linię
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // zachowaj niepełną linię
 
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-                try {
-                    const event = JSON.parse(line.slice(6));
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    try {
+                        const event = JSON.parse(line.slice(6));
 
-                    if (event.error && !event.page_number) {
-                        showToast(event.error, 'error');
-                        continue;
+                        if (event.error && !event.page_number) {
+                            showToast(event.error, 'error');
+                            continue;
+                        }
+
+                        if (event.done) {
+                            showProgress(100, event.message);
+                            showToast(event.message, 'success');
+                            loadPage(state.currentPage);
+                            continue;
+                        }
+
+                        // Aktualizacja postępu
+                        const pct = event.progress || 0;
+                        const statusText = `Strona ${event.page_number}: ${event.type.toUpperCase()} (${event.completed}/${event.total})`;
+                        showProgress(pct, statusText);
+
+                    } catch (parseErr) {
+                        // Pomiń niepoprawne linie
                     }
-
-                    if (event.done) {
-                        showProgress(100, event.message);
-                        showToast(event.message, 'success');
-                        loadPage(state.currentPage);
-                        continue;
-                    }
-
-                    // Aktualizacja postępu
-                    const pct = event.progress || 0;
-                    const statusText = `Strona ${event.page_number}: ${event.type.toUpperCase()} (${event.completed}/${event.total})`;
-                    showProgress(pct, statusText);
-
-                } catch (parseErr) {
-                    // Pomiń niepoprawne linie
                 }
+            }
+        } catch (readerErr) {
+            // Połączenie zerwane (tab w tle, sieć) — nie panikuj
+            if (readerErr.name !== 'AbortError') {
+                console.warn('SSE stream przerwany:', readerErr.message);
+                showToast('Połączenie przerwane — przetwarzanie kontynuuje na serwerze. Odśwież stronę.', 'error');
             }
         }
     } catch (err) {
-        showToast('Błąd: ' + err.message, 'error');
+        if (err.name !== 'AbortError') {
+            showToast('Błąd: ' + err.message, 'error');
+        }
     } finally {
+        state._sseAbort = null;
         state.processing = false;
         setTimeout(hideProgress, 2000);
     }
@@ -464,6 +489,26 @@ async function submitSeoGeneration() {
 
 function downloadHtml() {
     window.location.href = `/download/html/${state.currentPage}`;
+}
+
+async function analyzeVisual() {
+    showLoading(`Analiza wizualna strony ${state.currentPage}... Wysyłanie obrazu do AI.`);
+
+    try {
+        const resp = await fetch(`/process-page-vision/${state.currentPage}`, { method: 'POST' });
+        const data = await resp.json();
+
+        if (data.error) {
+            showToast(`Błąd: ${data.error}`, 'error');
+        } else {
+            showToast('Analiza wizualna zakończona!', 'success');
+            loadPage(state.currentPage);
+        }
+    } catch (err) {
+        showToast('Błąd: ' + err.message, 'error');
+    } finally {
+        hideLoading();
+    }
 }
 
 // ===== PROJECT =====

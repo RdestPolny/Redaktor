@@ -387,6 +387,37 @@ def process_single_page(page_num):
     )
 
 
+@app.route('/process-page-vision/<int:page_num>', methods=['POST'])
+def process_page_vision(page_num):
+    """Przetwarza stronę przez analizę wizualną (obraz → AI)."""
+    doc = _state.get('document')
+    if not doc:
+        return jsonify(error="Brak dokumentu."), 400
+
+    page_index = page_num - 1
+    if page_index < 0 or page_index >= _state['total_pages']:
+        return jsonify(error="Nieprawidłowy numer strony."), 400
+
+    if doc.file_type != 'pdf':
+        return jsonify(error="Analiza wizualna dostępna tylko dla PDF."), 400
+
+    image_data = doc.render_page_as_image(page_index)
+    if not image_data:
+        return jsonify(error="Nie udało się wyrenderować strony."), 500
+
+    ai = _get_ai()
+    result = ai.process_page_vision(image_data)
+    result['page_number'] = page_num
+    _state['extracted_pages'][page_index] = result
+
+    return jsonify(
+        ok=True,
+        type=result.get('type', 'nieznany'),
+        formatted_content=result.get('formatted_content', ''),
+        raw_markdown=result.get('raw_markdown', ''),
+    )
+
+
 @app.route('/meta/<int:page_num>', methods=['POST'])
 def generate_meta(page_num):
     """Generuje meta tagi."""

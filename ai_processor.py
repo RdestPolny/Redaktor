@@ -143,6 +143,35 @@ Twój proces twórczy składa się z następujących kroków (realizujesz je men
 3. **WARTOŚĆ DLA CZYTELNIKA**: Każde zdanie musi wnosić wartość. Usuń watę słowną, ogólniki i truizmy.
 4. **POLISH SEO**: Pisz po polsku z uwzględnieniem polskiej specyfiki SEO (odmiana fraz, naturalny szyk zdania)."""
 
+VISION_ARTICLE_PROMPT = """Jesteś precyzyjnym asystentem redakcyjnym z umiejętnością analizy wizualnej dokumentów.
+
+DOSTAJESZ OBRAZ STRONY z PDF. Twoim zadaniem jest:
+1. Wizualnie rozpoznać układ strony (liczba kolumn, położenie tytułów, zdjęć, podpisów).
+2. Odczytać TEKST ze strony w prawidłowej kolejności lektury (kolumna po kolumnie, góra→dół).
+3. Przekształcić go w czytelny artykuł.
+
+ZASADA NADRZĘDNA: WIERNOŚĆ TREŚCI, ELASTYCZNOŚĆ FORMY.
+- Nie zmieniaj oryginalnych sformułowań, przenieś tekst 1:1.
+- Twoja rola polega na dodawaniu elementów strukturalnych i czyszczeniu śmieci.
+
+INSTRUKCJE DLA ANALIZY WIZUALNEJ:
+- Czytaj kolumny OD LEWEJ DO PRAWEJ, każdą kolumnę OD GÓRY DO DOŁU.
+- Jeśli strona ma 2 lub 3 kolumny, traktuj każdą jako oddzielny ciąg tekstu.
+- IGNORUJ: numery stron, stopki redakcyjne, URL-e typ "www.audio.com.pl", podpisy pod zdjęciami ("Fot.", "Rys.").
+- IGNORUJ reklamy, ogłoszenia i elementy graficzne bez treści merytorycznej.
+
+FORMATOWANIE:
+1. Tytuł Główny: `# Tytuł`
+2. Śródtytuły: `## Śródtytuł`
+3. Pogrubienia: `**tekst**` (kluczowe terminy)
+4. Listy: standardowe listy Markdown
+5. Przypisy: `<sup>1</sup>`
+
+WAŻNE:
+- Ustaw "type" na "ARTYKUŁ" jeśli to tekst merytoryczny.
+- Ustaw "type" na "REKLAMA" jeśli to reklama, spis treści lub strona graficzna.
+- Pole "formatted_text" zawiera sformatowany tekst w Markdown."""
+
 
 # ===== KLASA AI PROCESSOR =====
 
@@ -311,3 +340,92 @@ class AIProcessor:
             response_schema=SEOArticleResponse,
             temperature=0.4,
         )
+
+    def _generate_multimodal(
+        self,
+        parts: list,
+        system_prompt: str,
+        response_schema,
+        temperature: float = 0.2,
+    ) -> Dict:
+        """Generuje odpowiedź z Gemini z treścią multimodalną (tekst + obraz)."""
+        last_error = None
+        raw_text = ""
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=parts,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=temperature,
+                        response_mime_type="application/json",
+                        response_schema=response_schema,
+                    ),
+                )
+
+                raw_text = response.text
+                if not raw_text:
+                    raise ValueError("API zwróciło pustą odpowiedź.")
+
+                return json.loads(raw_text)
+
+            except json.JSONDecodeError as e:
+                last_error = e
+                logger.warning(
+                    "Vision próba %d/%d: Błąd dekodowania JSON.",
+                    attempt + 1, MAX_RETRIES,
+                )
+                time.sleep(1.5 * (attempt + 1))
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Vision próba %d/%d: Błąd API: %s",
+                    attempt + 1, MAX_RETRIES, str(e)[:200],
+                )
+                time.sleep(2.0 * (attempt + 1))
+
+        return {
+            "error": f"Błąd po {MAX_RETRIES} próbach.",
+            "last_known_error": str(last_error),
+            "raw_response": raw_text,
+        }
+
+    def process_page_vision(self, image_bytes: bytes) -> Dict:
+        """Przetwarza stronę na podstawie obrazu (analiza wizualna)."""
+        image_part = types.Part.from_bytes(
+            data=image_bytes,
+            mime_type="image/png",
+        )
+
+        result = self._generate_multimodal(
+            parts=["Przeanalizuj tę stronę dokumentu i odczytaj tekst w prawidłowej kolejności:", image_part],
+            system_prompt=VISION_ARTICLE_PROMPT,
+            response_schema=ArticleResponse,
+            temperature=0.2,
+        )
+
+        page_data = {}
+        if "error" in result:
+            page_data["type"] = "błąd"
+            page_data["formatted_content"] = (
+                f"<div class='error-box'>"
+                f"<strong>{result['error']}</strong><br>"
+                f"<i>Ostatni błąd: {result['last_known_error']}</i>"
+                f"</div>"
+            )
+        else:
+            page_data["type"] = result.get("type", "nieznany").lower()
+            formatted_text = result.get("formatted_text", "")
+
+            if page_data["type"] == "artykuł":
+                page_data["formatted_content"] = markdown_to_html(formatted_text)
+                page_data["raw_markdown"] = formatted_text
+            else:
+                page_data["formatted_content"] = (
+                    f"<i>Zidentyfikowano jako: "
+                    f"<strong>{page_data['type'].upper()}</strong>.</i>"
+                )
+
+        return page_data
