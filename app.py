@@ -169,6 +169,69 @@ def upload_file():
         return jsonify(error=str(e)), 400
 
 
+@app.route('/open-path', methods=['POST'])
+def open_path():
+    """Otwiera plik bezpośrednio ze ścieżki lokalnej na serwerze.
+
+    Nie wymaga uploadu HTTP — idealne dla dużych plików (100+ MB) na lokalnym deploy.
+    Body JSON: { "path": "/ścieżka/do/pliku.pdf" }
+    """
+    data = request.get_json()
+    if not data or 'path' not in data:
+        return jsonify(error="Podaj pole 'path' w JSON."), 400
+
+    file_path = data['path'].strip()
+
+    # Podstawowe sprawdzenia bezpieczeństwa
+    if not file_path:
+        return jsonify(error="Ścieżka jest pusta."), 400
+
+    path_obj = Path(file_path)
+
+    if not path_obj.exists():
+        return jsonify(error=f"Plik nie istnieje: {file_path}"), 404
+
+    if not path_obj.is_file():
+        return jsonify(error=f"Podana ścieżka nie jest plikiem: {file_path}"), 400
+
+    # Obsługiwane rozszerzenia
+    ext = path_obj.suffix.lower()
+    if ext not in ('.pdf', '.docx', '.doc'):
+        return jsonify(error=f"Nieobsługiwany format: {ext}. Obsługiwane: PDF, DOCX, DOC"), 400
+
+    try:
+        cleanup_temp_file()  # Wyczyść poprzedni temp jeśli był
+
+        doc = DocumentHandler(str(path_obj), path_obj.name)
+
+        _state['document'] = doc
+        _state['filename'] = path_obj.name
+        _state['file_type'] = doc.file_type
+        _state['total_pages'] = doc.get_page_count()
+        _state['extracted_pages'] = [None] * doc.get_page_count()
+        _state['meta_tags'] = {}
+        _state['seo_articles'] = {}
+        _state['project_name'] = sanitize_filename(path_obj.stem)
+        _state['temp_file_path'] = None  # plik lokalny — nie usuwamy
+
+        file_size_mb = round(path_obj.stat().st_size / 1024 / 1024, 1)
+        logger.info("Otwarto plik lokalny: %s (%.1f MB, %d stron)",
+                    path_obj.name, file_size_mb, doc.get_page_count())
+
+        return jsonify(
+            filename=path_obj.name,
+            file_type=doc.file_type,
+            total_pages=doc.get_page_count(),
+            project_name=_state['project_name'],
+            file_size_mb=file_size_mb,
+        )
+
+    except Exception as e:
+        logger.error("open-path error: %s", e)
+        return jsonify(error=str(e)), 400
+
+
+
 # ===== ROUTES: PAGE DATA =====
 
 @app.route('/page/<int:page_num>/preview')

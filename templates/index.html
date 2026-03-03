@@ -24,13 +24,37 @@
 
     <!-- UPLOAD ZONE -->
     <section id="upload-section" class="upload-section">
-        <div class="upload-zone" id="upload-zone">
-            <div class="upload-icon">📄</div>
-            <h2>Przeciągnij plik tutaj</h2>
-            <p>lub kliknij aby wybrać</p>
-            <p class="upload-formats">Obsługiwane formaty: {{ supported_formats | join(', ') }}</p>
-            <input type="file" id="file-input" accept=".pdf,.docx,.doc" hidden>
+        <div class="upload-options">
+
+            <!-- OPCJA 1: Upload przez przeglądarkę -->
+            <div class="upload-zone" id="upload-zone">
+                <div class="upload-icon">📤</div>
+                <h2>Prześlij plik</h2>
+                <p>Przeciągnij lub kliknij aby wybrać</p>
+                <p class="upload-formats">{{ supported_formats | join(', ') }} · limit zależy od serwera</p>
+                <input type="file" id="file-input" accept=".pdf,.docx,.doc" hidden>
+            </div>
+
+            <div class="upload-divider">
+                <span>lub</span>
+            </div>
+
+            <!-- OPCJA 2: Otwórz z dysku przez ścieżkę lokalną -->
+            <div class="open-path-zone">
+                <div class="upload-icon">📂</div>
+                <h2>Otwórz z dysku</h2>
+                <p>Podaj lokalną ścieżkę do pliku</p>
+                <p class="upload-formats">Bez limitu rozmiaru · działa tylko lokalnie</p>
+                <div class="path-input-row">
+                    <input type="text" id="path-input" class="path-input" placeholder="/Users/ty/Dokumenty/plik.pdf"
+                        spellcheck="false" autocomplete="off">
+                    <button class="btn btn-primary" onclick="openFromPath()">Otwórz</button>
+                </div>
+            </div>
+
         </div>
+
+        <!-- Progress (wspólny dla obu trybów) -->
         <div id="upload-progress" class="upload-progress hidden">
             <div class="spinner"></div>
             <p>Ładowanie pliku…</p>

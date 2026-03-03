@@ -86,19 +86,113 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 80px 32px;
+    padding: 60px 32px;
+}
+
+/* Dwa panele obok siebie */
+.upload-options {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    max-width: 860px;
+    width: 100%;
+}
+
+/* Pionowy separator "lub" */
+.upload-divider {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0 24px;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-weight: 500;
+    position: relative;
+}
+
+.upload-divider::before,
+.upload-divider::after {
+    content: '';
+    flex: 1;
+    width: 1px;
+    background: var(--border);
+    margin: 12px 0;
+}
+
+/* Panel "Otwórz z dysku" */
+.open-path-zone {
+    flex: 1;
+    border: 2px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 40px 32px;
+    text-align: center;
+    background: var(--bg-secondary);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    transition: all var(--transition);
+}
+
+.open-path-zone:hover {
+    border-color: var(--accent);
+}
+
+.open-path-zone h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0;
+}
+
+.open-path-zone p {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.path-input-row {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+    margin-top: 12px;
+}
+
+.path-input {
+    flex: 1;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.85rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    transition: border-color var(--transition);
+    min-width: 0;
+}
+
+.path-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.path-input::placeholder {
+    color: var(--text-muted);
+}
+
+/* Upload zone (lewy panel) — dopasowania */
+.upload-zone {
+    flex: 1;
 }
 
 .upload-zone {
     border: 2px dashed var(--border);
     border-radius: var(--radius-lg);
-    padding: 60px 80px;
+    padding: 40px 32px;
     text-align: center;
     cursor: pointer;
     transition: all var(--transition);
     background: var(--bg-secondary);
-    max-width: 600px;
-    width: 100%;
 }
 
 .upload-zone:hover,
@@ -820,6 +914,28 @@ body {
     }
 
     .upload-zone {
-        padding: 40px 24px;
+        padding: 32px 20px;
+    }
+
+    .upload-options {
+        flex-direction: column;
+        max-width: 500px;
+    }
+
+    .upload-divider {
+        flex-direction: row;
+        padding: 16px 0;
+    }
+
+    .upload-divider::before,
+    .upload-divider::after {
+        flex: 1;
+        width: auto;
+        height: 1px;
+        margin: 0 12px;
+    }
+
+    .open-path-zone {
+        padding: 32px 20px;
     }
 }

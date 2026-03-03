@@ -71,6 +71,90 @@ fileInput.addEventListener('change', () => {
     }
 });
 
+// Obsługa Enter w polu ścieżki
+document.addEventListener('DOMContentLoaded', () => {
+    const pathInput = document.getElementById('path-input');
+    if (pathInput) {
+        pathInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') openFromPath();
+        });
+        // Drag & drop ścieżki tekstowej na pole (np. z Findera)
+        pathInput.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const text = e.dataTransfer.getData('text');
+            if (text) pathInput.value = text.trim();
+        });
+    }
+});
+
+async function openFromPath() {
+    const pathInput = document.getElementById('path-input');
+    const filePath = pathInput ? pathInput.value.trim() : '';
+
+    if (!filePath) {
+        showToast('Wpisz ścieżkę do pliku.', 'error');
+        return;
+    }
+
+    const uploadSection = document.getElementById('upload-options') || document.querySelector('.upload-options');
+    const progressEl = document.getElementById('upload-progress');
+    const progressMsg = progressEl.querySelector('p');
+
+    if (uploadSection) uploadSection.classList.add('hidden');
+    progressEl.classList.remove('hidden');
+    progressMsg.textContent = `📂 Otwieranie: ${filePath.split('/').pop() || filePath}…`;
+
+    // Brak progress baru uploadu — plik jest lokalny, otwarcie jest niemal natychmiastowe
+    const fill = document.getElementById('upload-progress-fill');
+    if (fill) fill.style.width = '50%';
+
+    try {
+        const resp = await fetch('/open-path', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath }),
+        });
+
+        let data;
+        try {
+            const ct = resp.headers.get('Content-Type') || '';
+            data = ct.includes('application/json')
+                ? await resp.json()
+                : { error: `Błąd serwera HTTP ${resp.status}` };
+        } catch {
+            data = { error: 'Nieoczekiwana odpowiedź serwera.' };
+        }
+
+        if (data.error) {
+            showToast(data.error, 'error');
+            if (uploadSection) uploadSection.classList.remove('hidden');
+            progressEl.classList.add('hidden');
+            progressMsg.textContent = 'Ładowanie pliku…';
+            if (fill) fill.style.width = '0%';
+            return;
+        }
+
+        if (fill) fill.style.width = '100%';
+
+        state.totalPages = data.total_pages;
+        state.filename = data.filename;
+        state.fileType = data.file_type;
+        state.projectName = data.project_name;
+        state.currentPage = 1;
+
+        initWorkspace();
+        const sizeTxt = data.file_size_mb ? ` · ${data.file_size_mb} MB` : '';
+        showToast(`Otwarto: ${data.filename} (${data.total_pages} stron${sizeTxt})`, 'success');
+
+    } catch (err) {
+        showToast('Błąd: ' + err.message, 'error');
+        if (uploadSection) uploadSection.classList.remove('hidden');
+        progressEl.classList.add('hidden');
+        progressMsg.textContent = 'Ładowanie pliku…';
+        if (fill) fill.style.width = '0%';
+    }
+}
+
 async function uploadFile(file) {
     const zone = document.getElementById('upload-zone');
     const progressEl = document.getElementById('upload-progress');
