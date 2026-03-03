@@ -1,6 +1,6 @@
 """
 Redaktor AI — AI Processor
-Integracja z Gemini 3 Flash Preview przez google-genai SDK.
+Integracja z Gemini 2.5 Flash-Lite Preview przez google-genai SDK.
 """
 
 import json
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ===== KONFIGURACJA =====
 
 MAX_RETRIES = 3
-DEFAULT_MODEL = "gemini-3-flash-preview"
+DEFAULT_MODEL = "gemini-2.5-flash-lite-preview-06-17"
 API_KEY = "AIzaSyAl69MEfwxVIiU7sX6M3u-KOqVI_c782Yc"
 
 

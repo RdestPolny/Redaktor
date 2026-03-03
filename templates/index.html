@@ -15,7 +15,7 @@
     <header class="header">
         <div class="header-left">
             <h1>🚀 Redaktor AI</h1>
-            <span class="badge">Gemini 3 Flash</span>
+            <span class="badge">Gemini 2.5 Flash-Lite</span>
         </div>
         <div class="header-right">
             <span id="status-text" class="status-text">Brak dokumentu</span>
@@ -61,6 +61,7 @@
             <div class="processing-options">
                 <select id="process-mode" class="select-mode">
                     <option value="all">Cały dokument</option>
+                    <option value="all-smart">⚡ Smart Auto (tekst + vision)</option>
                     <option value="range">Zakres stron</option>
                     <option value="article">Artykuł wielostronicowy</option>
                 </select>
@@ -94,12 +95,22 @@
             <div class="panel panel-original">
                 <div class="panel-header">
                     <h3>📄 Oryginał</h3>
+                    <div id="page-export-actions" class="page-export-actions hidden">
+                        <button class="btn btn-ghost btn-sm" onclick="exportPageImages()" id="btn-export-images"
+                            title="Pobierz grafiki ze strony jako ZIP">
+                            🖼️ Grafiki
+                        </button>
+                        <a id="btn-export-highres" class="btn btn-ghost btn-sm" href="#"
+                            title="Pobierz stronę jako PNG w wysokiej rozdzielczości">
+                            📸 Highres PNG
+                        </a>
+                    </div>
                 </div>
                 <div id="original-content" class="panel-body">
                     <p class="placeholder-text">Wybierz stronę aby zobaczyć oryginał</p>
                 </div>
                 <div id="raw-text-toggle" class="raw-text-section hidden">
-                    <button class="btn btn-ghost" onclick="toggleRawText()">👁️ Surowy tekst</button>
+                    <button class="btn btn-ghost" onclick="toggleRawText()">&#128065;&#65039; Surowy tekst</button>
                     <pre id="raw-text" class="raw-text hidden"></pre>
                 </div>
             </div>
@@ -108,7 +119,10 @@
             <div class="panel panel-processed">
                 <div class="panel-header">
                     <h3>🤖 Przetworzone przez AI</h3>
-                    <span id="result-type" class="result-badge hidden"></span>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span id="processing-mode-badge" class="processing-mode-badge hidden"></span>
+                        <span id="result-type" class="result-badge hidden"></span>
+                    </div>
                 </div>
                 <div id="processed-content" class="panel-body">
                     <p class="placeholder-text">Uruchom przetwarzanie aby zobaczyć wynik</p>

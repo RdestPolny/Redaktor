@@ -22,4 +22,6 @@ COPY . .
 EXPOSE 8080
 
 # Gunicorn — produkcyjny serwer WSGI
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "-w", "2", "--timeout", "300", "app:app"]
+# --timeout 600: dla dużych uploadów PDF (100+ MB)
+# --limit-request-body: max 500 MB (gunicorn domyślnie blokuje > ~130 KB)
+CMD ["gunicorn", "-b", "0.0.0.0:8080", "-w", "2", "--timeout", "600", "--limit-request-body", "524288000", "app:app"]

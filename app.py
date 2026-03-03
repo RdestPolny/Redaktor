@@ -1,6 +1,6 @@
 """
 Redaktor AI — Flask Application
-Interaktywny procesor dokumentów z Gemini 3 Flash Preview.
+Interaktywny procesor dokumentów z Gemini 2.5 Flash-Lite Preview.
 """
 
 import os
@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import threading
+import tempfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
-app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200 MB
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500 MB
 
 # Stan dokumentów w pamięci serwera (single-user per instance)
 # Na Cloud Run każdy kontener obsługuje jednego użytkownika naraz
@@ -48,7 +49,17 @@ _state = {
     'meta_tags': {},
     'seo_articles': {},
     'project_name': None,
+    'temp_file_path': None,
 }
+
+def cleanup_temp_file():
+    temp_path = _state.get('temp_file_path')
+    if temp_path and os.path.exists(temp_path):
+        try:
+            os.remove(temp_path)
+        except Exception as e:
+            logger.warning("Nie udało się usunąć pliku tymczasowego: %s", e)
+    _state['temp_file_path'] = None
 
 
 def _get_ai() -> AIProcessor:
@@ -82,8 +93,16 @@ def upload_file():
         return jsonify(error="Pusta nazwa pliku."), 400
 
     try:
-        file_bytes = file.read()
-        doc = DocumentHandler(file_bytes, file.filename)
+        cleanup_temp_file()
+        
+        ext = Path(file.filename).suffix
+        fd, temp_path = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
+        
+        file.save(temp_path)
+        _state['temp_file_path'] = temp_path
+        
+        doc = DocumentHandler(temp_path, file.filename)
 
         _state['document'] = doc
         _state['filename'] = file.filename
@@ -132,6 +151,33 @@ def page_preview(page_num):
         return jsonify(error="Podgląd niedostępny dla tego formatu."), 404
 
 
+@app.route('/page/<int:page_num>/preview/highres')
+def page_preview_highres(page_num):
+    """Renderuje stronę PDF jako PNG w wysokiej rozdzielczości (216 DPI)."""
+    doc = _state.get('document')
+    if not doc:
+        return jsonify(error="Brak dokumentu."), 400
+
+    page_index = page_num - 1
+    if page_index < 0 or page_index >= _state['total_pages']:
+        return jsonify(error="Nieprawidłowy numer strony."), 400
+
+    if _state.get('file_type') != 'pdf':
+        return jsonify(error="Eksport strony dostępny tylko dla PDF."), 400
+
+    image_data = doc.render_page_highres(page_index)
+    if image_data:
+        project = _state.get('project_name', 'strona')
+        return send_file(
+            io.BytesIO(image_data),
+            mimetype='image/png',
+            as_attachment=True,
+            download_name=f'{project}_str{page_num}_highres.png',
+        )
+    else:
+        return jsonify(error="Nie udało się wyrenderować strony."), 500
+
+
 @app.route('/page/<int:page_num>/text')
 def page_text(page_num):
     """Zwraca surowy tekst strony."""
@@ -149,6 +195,26 @@ def page_text(page_num):
         text=content.text,
         image_count=len(content.images),
     )
+
+
+@app.route('/page/<int:page_num>/complexity')
+def page_complexity(page_num):
+    """Analizuje złożoność strony i rekomenduje tryb przetwarzania (text/vision)."""
+    doc = _state.get('document')
+    if not doc:
+        return jsonify(error="Brak dokumentu."), 400
+
+    page_index = page_num - 1
+    if page_index < 0 or page_index >= _state['total_pages']:
+        return jsonify(error="Nieprawidłowy numer strony."), 400
+
+    try:
+        analysis = doc.analyze_page_complexity(page_index)
+        analysis['page_number'] = page_num
+        return jsonify(analysis)
+    except Exception as e:
+        logger.error("Błąd analizy strony %d: %s", page_num, e)
+        return jsonify(error=str(e)), 500
 
 
 @app.route('/page/<int:page_num>/result')
@@ -258,6 +324,7 @@ def process_stream():
 
     data = request.get_json()
     mode = data.get('mode', 'all')
+    smart_mode = data.get('smart', False)  # true = auto-wybór text/vision per strona
 
     if mode == 'all':
         start_idx = 0
@@ -273,10 +340,16 @@ def process_stream():
 
     total = end_idx - start_idx + 1
 
-    # Przygotuj zawartości stron synchronicznie (I/O z PDF — szybkie)
+    # Analiza złożoności stron (przed przetwarzaniem, operacje I/O — szybkie)
     page_contents = {}
+    page_modes = {}  # page_idx -> 'text' lub 'vision'
     for i in range(start_idx, end_idx + 1):
         page_contents[i] = doc.get_page_content(i)
+        if smart_mode and doc.file_type == 'pdf':
+            complexity = doc.analyze_page_complexity(i)
+            page_modes[i] = complexity['recommended_mode']
+        else:
+            page_modes[i] = 'text'
 
     def generate():
         lock = threading.Lock()
@@ -285,8 +358,25 @@ def process_stream():
         def process_one(page_idx):
             """Przetwarza jedną stronę — wywoływane w wątku."""
             ai = _get_ai()  # Nowa instancja per wątek
-            content = page_contents[page_idx]
-            result = ai.process_page(content)
+            chosen_mode = page_modes.get(page_idx, 'text')
+
+            if chosen_mode == 'vision' and doc.file_type == 'pdf':
+                # Tryb wizualny: renderuj stronę i wyślij jako obraz do Gemini
+                image_data = doc.render_page_as_image(page_idx)
+                if image_data:
+                    result = ai.process_page_vision(image_data)
+                    result['page_number'] = page_idx + 1
+                    result['processing_mode'] = 'vision'
+                else:
+                    # Fallback na tekst jeśli renderowanie się nie uda
+                    content = page_contents[page_idx]
+                    result = ai.process_page(content)
+                    result['processing_mode'] = 'text_fallback'
+            else:
+                content = page_contents[page_idx]
+                result = ai.process_page(content)
+                result['processing_mode'] = 'text'
+
             with lock:
                 _state['extracted_pages'][page_idx] = result
                 completed[0] += 1
@@ -305,6 +395,7 @@ def process_stream():
                     event = {
                         'page_number': page_idx + 1,
                         'type': result.get('type', 'nieznany'),
+                        'processing_mode': result.get('processing_mode', 'text'),
                         'completed': completed[0],
                         'total': total,
                         'progress': round(completed[0] / total * 100),
@@ -478,6 +569,68 @@ def generate_seo(page_num):
 
 
 # ===== ROUTES: DOWNLOAD =====
+
+@app.route('/page/<int:page_num>/images')
+def page_images(page_num):
+    """Eksportuje wszystkie grafiki ze strony PDF jako archiwum ZIP."""
+    doc = _state.get('document')
+    if not doc:
+        return jsonify(error="Brak dokumentu."), 400
+
+    if _state.get('file_type') != 'pdf':
+        return jsonify(error="Eksport grafik dostępny tylko dla PDF."), 400
+
+    page_index = page_num - 1
+    if page_index < 0 or page_index >= _state['total_pages']:
+        return jsonify(error="Nieprawidłowy numer strony."), 400
+
+    try:
+        content = doc.get_page_content(page_index)
+        images = content.images
+
+        if not images:
+            return jsonify(error="Brak grafik na tej stronie."), 404
+
+        zip_data = []
+        for img in images:
+            ext = img.get('ext', 'png')
+            idx = img.get('index', 0)
+            filename = f"strona_{page_num}_grafika_{idx + 1}.{ext}"
+            zip_data.append({'name': filename, 'content': img['image']})
+
+        zip_bytes = create_zip_archive(zip_data)
+        project = _state.get('project_name', 'dokument')
+
+        return send_file(
+            io.BytesIO(zip_bytes),
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f'{project}_str{page_num}_grafiki.zip',
+        )
+
+    except Exception as e:
+        logger.error("Błąd eksportu grafik: %s", e)
+        return jsonify(error=str(e)), 500
+
+
+@app.route('/page/<int:page_num>/images/count')
+def page_images_count(page_num):
+    """Zwraca liczbę grafik na stronie PDF."""
+    doc = _state.get('document')
+    if not doc or _state.get('file_type') != 'pdf':
+        return jsonify(count=0)
+
+    page_index = page_num - 1
+    if page_index < 0 or page_index >= _state['total_pages']:
+        return jsonify(count=0)
+
+    try:
+        content = doc.get_page_content(page_index)
+        count = len(content.images)
+        return jsonify(count=count, page=page_num)
+    except Exception:
+        return jsonify(count=0)
+
 
 @app.route('/download/articles')
 def download_articles():

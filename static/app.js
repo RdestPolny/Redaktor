@@ -150,12 +150,14 @@ async function loadPage(pageNum) {
     const rawTextSection = document.getElementById('raw-text-toggle');
     const rawText = document.getElementById('raw-text');
     const resultBadge = document.getElementById('result-type');
+    const modeBadge = document.getElementById('processing-mode-badge');
     const actionButtons = document.getElementById('action-buttons');
     const metaResult = document.getElementById('meta-result');
     const seoResult = document.getElementById('seo-result');
 
     // Reset
     resultBadge.classList.add('hidden');
+    modeBadge.classList.add('hidden');
     actionButtons.classList.add('hidden');
     metaResult.classList.add('hidden');
     seoResult.classList.add('hidden');
@@ -163,8 +165,33 @@ async function loadPage(pageNum) {
     // Load original
     if (state.fileType === 'pdf') {
         originalContent.innerHTML = `<img src="/page/${pageNum}/preview?t=${Date.now()}" alt="Strona ${pageNum}" loading="lazy">`;
+
+        // Aktywuj przyciski eksportu
+        const exportActions = document.getElementById('page-export-actions');
+        exportActions.classList.remove('hidden');
+
+        // Ustaw link do highres PNG
+        document.getElementById('btn-export-highres').href = `/page/${pageNum}/preview/highres`;
+
+        // Sprawdz liczbę grafik asynchronicznie
+        fetch(`/page/${pageNum}/images/count`)
+            .then(r => r.json())
+            .then(data => {
+                const btnImg = document.getElementById('btn-export-images');
+                if (data.count > 0) {
+                    btnImg.textContent = `\ud83d\uddbc\ufe0f Grafiki (${data.count})`;
+                    btnImg.disabled = false;
+                } else {
+                    btnImg.textContent = '\ud83d\uddbc\ufe0f Grafiki (0)';
+                    btnImg.disabled = true;
+                }
+            })
+            .catch(() => {
+                document.getElementById('btn-export-images').disabled = true;
+            });
     } else {
         originalContent.innerHTML = `<p class="placeholder-text">Podgląd niedostępny dla ${state.fileType.toUpperCase()}</p>`;
+        document.getElementById('page-export-actions').classList.add('hidden');
     }
 
     // Load raw text
@@ -188,6 +215,16 @@ async function loadPage(pageNum) {
             resultBadge.textContent = type.toUpperCase();
             resultBadge.className = `result-badge type-${type}`;
             resultBadge.classList.remove('hidden');
+
+            // Badge trybu przetwarzania
+            const pm = resultData.processing_mode || '';
+            if (pm) {
+                modeBadge.textContent = pm === 'vision' ? '👁️ Vision' : '📝 Tekst';
+                modeBadge.className = `processing-mode-badge mode-${pm === 'vision' ? 'vision' : 'text'}`;
+                modeBadge.classList.remove('hidden');
+            } else {
+                modeBadge.classList.add('hidden');
+            }
 
             processedContent.innerHTML = resultData.formatted_content || '<p>Brak treści.</p>';
 
@@ -244,7 +281,11 @@ async function startProcessing() {
     if (state.processing) return;
 
     const mode = document.getElementById('process-mode').value;
-    const body = { mode };
+    const body = { mode: mode === 'all-smart' ? 'all' : mode };
+
+    if (mode === 'all-smart') {
+        body.smart = true;
+    }
 
     if (mode === 'range') {
         body.start_page = parseInt(document.getElementById('range-start').value);
@@ -337,7 +378,8 @@ async function startProcessing() {
 
                         // Aktualizacja postępu
                         const pct = event.progress || 0;
-                        const statusText = `Strona ${event.page_number}: ${event.type.toUpperCase()} (${event.completed}/${event.total})`;
+                        const modeIcon = event.processing_mode === 'vision' ? '👁️ Vision' : '📝 Tekst';
+                        const statusText = `Str. ${event.page_number}: ${event.type.toUpperCase()} [${modeIcon}] (${event.completed}/${event.total})`;
                         showProgress(pct, statusText);
 
                     } catch (parseErr) {
@@ -489,6 +531,38 @@ async function submitSeoGeneration() {
 
 function downloadHtml() {
     window.location.href = `/download/html/${state.currentPage}`;
+}
+
+async function exportPageImages() {
+    const btn = document.getElementById('btn-export-images');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Pobieranie...';
+
+    try {
+        const resp = await fetch(`/page/${state.currentPage}/images`);
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            showToast(data.error || 'Błąd eksportu grafik', 'error');
+            return;
+        }
+        // Pobierz ZIP
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const disposition = resp.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="?([^"]+)"?/);
+        a.download = match ? match[1] : `grafiki_str${state.currentPage}.zip`;
+        a.href = url;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('Grafiki pobrane!', 'success');
+    } catch (err) {
+        showToast('Błąd: ' + err.message, 'error');
+    } finally {
+        btn.textContent = originalText;
+        btn.disabled = false;
+    }
 }
 
 async function analyzeVisual() {

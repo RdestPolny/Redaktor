@@ -14,6 +14,10 @@ import fitz  # PyMuPDF
 
 logger = logging.getLogger(__name__)
 
+# Skala renderowania strony (2.0 = 144 DPI, 3.0 = 216 DPI)
+RENDER_SCALE_PREVIEW = 2.0
+RENDER_SCALE_HIGHRES = 3.0
+
 # Opcjonalne importy
 try:
     from docx import Document as DocxDocument
@@ -39,12 +43,20 @@ class PageContent:
 class DocumentHandler:
     """Klasa do obsługi różnych formatów dokumentów."""
 
-    def __init__(self, file_bytes: bytes, filename: str):
-        self.file_bytes = file_bytes
+    def __init__(self, file_source, filename: str):
         self.filename = filename
         self.file_type = self._detect_file_type(filename)
         self._document = None
         self._html_content = None
+
+        self.is_path = isinstance(file_source, (str, Path))
+        if self.is_path:
+            self.file_path = str(file_source)
+            self.file_bytes = None
+        else:
+            self.file_bytes = file_source
+            self.file_path = None
+            
         self._load_document()
 
     def _detect_file_type(self, filename: str) -> str:
@@ -68,11 +80,21 @@ class DocumentHandler:
 
     def _load_document(self):
         if self.file_type == 'pdf':
-            self._document = fitz.open(stream=self.file_bytes, filetype="pdf")
+            if self.is_path:
+                self._document = fitz.open(self.file_path)
+            else:
+                self._document = fitz.open(stream=self.file_bytes, filetype="pdf")
         elif self.file_type == 'docx':
-            self._document = DocxDocument(io.BytesIO(self.file_bytes))
+            if self.is_path:
+                self._document = DocxDocument(self.file_path)
+            else:
+                self._document = DocxDocument(io.BytesIO(self.file_bytes))
         elif self.file_type == 'doc':
-            result = mammoth.convert_to_html(io.BytesIO(self.file_bytes))
+            if self.is_path:
+                with open(self.file_path, 'rb') as f:
+                    result = mammoth.convert_to_html(f)
+            else:
+                result = mammoth.convert_to_html(io.BytesIO(self.file_bytes))
             self._html_content = result.value
             self._document = None
 
@@ -87,6 +109,124 @@ class DocumentHandler:
             words = self._html_content.split()
             return max(1, len(words) // 500 + (1 if len(words) % 500 > 0 else 0))
         return 0
+
+    def analyze_page_complexity(self, page_index: int) -> dict:
+        """Analizuje złożoność strony i rekomenduje tryb przetwarzania.
+
+        Metryki:
+        - image_coverage: % obszaru strony zajęty przez obrazy (0-100)
+        - text_blocks: liczba bloków tekstowych
+        - estimated_columns: szacowana liczba kolumn (1, 2, 3)
+        - has_framed_blocks: czy wykryto bloki tekstowe w ramkach (sidebar/inset)
+        - has_chart_labels: czy krótkie teksty sugerują etykiety wykresów
+        - recommended_mode: 'vision' lub 'text'
+        - reason: powód rekomendacji
+
+        Logika rekomendacji vision:
+        - image_coverage >= 25% → strona z wykresami/infografikami
+        - has_framed_blocks == True → sidebar/ramka zaburza ekstrakcję kolumn
+        - text_blocks < 5 → za mało tekstu (obrazkowa strona)
+        """
+        if self.file_type != 'pdf':
+            return {
+                'image_coverage': 0,
+                'text_blocks': 0,
+                'estimated_columns': 1,
+                'has_framed_blocks': False,
+                'has_chart_labels': False,
+                'recommended_mode': 'text',
+                'reason': 'Nie-PDF — ekstrakcja tekstowa',
+            }
+
+        try:
+            page = self._document.load_page(page_index)
+        except Exception as e:
+            return {
+                'image_coverage': 0, 'text_blocks': 0, 'estimated_columns': 1,
+                'has_framed_blocks': False, 'has_chart_labels': False,
+                'recommended_mode': 'text', 'reason': f'Błąd analizy: {e}',
+            }
+
+        page_rect = page.rect
+        page_area = page_rect.width * page_rect.height
+
+        # 1. Pokrycie przez obrazy
+        image_rects = self._get_image_rects(page)
+        image_area = 0.0
+        for ir in image_rects:
+            w = ir[2] - ir[0]
+            h = ir[3] - ir[1]
+            image_area += max(0, w) * max(0, h)
+        image_coverage = min(100.0, (image_area / page_area * 100)) if page_area > 0 else 0.0
+
+        # 2. Bloki tekstowe
+        all_blocks = page.get_text("blocks")
+        text_blocks = [b for b in all_blocks if b[6] == 0 and b[4].strip()]
+        n_text_blocks = len(text_blocks)
+
+        # 3. Szacowanie liczby kolumn (gap-based, uproszczone)
+        estimated_columns = 1
+        if n_text_blocks >= 3:
+            cols = self._detect_columns(text_blocks, page_rect.width)
+            estimated_columns = len(cols) if cols else 1
+
+        # 4. Detekcja ramek/insetów
+        # Blok jest prawdopodobnie w ramce jeśli jest otoczony innymi blokami
+        # na tej samej osi Y (nie rozciąga się przez pełną szerokość ani kolonę)
+        # Heurystyka: blok o szerokości 40-85% strony, którego lewy margines > 5%
+        # i prawy margines > 5% — typowe dla boxów/insetów
+        has_framed_blocks = False
+        page_w = page_rect.width
+        for b in text_blocks:
+            bw = b[2] - b[0]
+            bl = b[0]
+            br = page_w - b[2]
+            rel_w = bw / page_w
+            if 0.35 < rel_w < 0.90 and bl > page_w * 0.04 and br > page_w * 0.04:
+                # Sprawdź czy inne bloki nachodzą na tę samą oś Y
+                b_ymid = (b[1] + b[3]) / 2
+                overlapping_y = [
+                    ob for ob in text_blocks
+                    if ob is not b and ob[1] < b_ymid < ob[3]
+                ]
+                if overlapping_y:
+                    has_framed_blocks = True
+                    break
+
+        # 5. Detekcja etykiet wykresów (krótkie bloki < 30 znaków, dużo ich)
+        short_blocks = [b for b in text_blocks if len(b[4].strip()) < 35]
+        chart_label_ratio = len(short_blocks) / n_text_blocks if n_text_blocks > 0 else 0
+        has_chart_labels = chart_label_ratio > 0.45 and len(short_blocks) >= 4
+
+        # --- Reguły rekomendacji ---
+        reason = ''
+        recommended_mode = 'text'
+
+        if image_coverage >= 25:
+            recommended_mode = 'vision'
+            reason = f'Wykresy/grafiki zajmują {image_coverage:.0f}% strony'
+        elif has_framed_blocks and estimated_columns >= 2:
+            recommended_mode = 'vision'
+            reason = 'Wykryto ramkę/inset obok kolumn tekstu'
+        elif has_chart_labels and image_coverage >= 10:
+            recommended_mode = 'vision'
+            reason = f'Etykiety wykresów ({len(short_blocks)} krótkich bloków) + obrazy'
+        elif n_text_blocks < 4 and image_coverage >= 10:
+            recommended_mode = 'vision'
+            reason = 'Mało tekstu, dużo elementów graficznych'
+        else:
+            reason = f'{estimated_columns}-kolumnowy układ tekstowy ({n_text_blocks} bloków)'
+
+        return {
+            'image_coverage': round(image_coverage, 1),
+            'text_blocks': n_text_blocks,
+            'estimated_columns': estimated_columns,
+            'has_framed_blocks': has_framed_blocks,
+            'has_chart_labels': has_chart_labels,
+            'recommended_mode': recommended_mode,
+            'reason': reason,
+        }
+
 
     def get_page_content(self, page_index: int) -> PageContent:
         if self.file_type == 'pdf':
@@ -335,13 +475,17 @@ class DocumentHandler:
             for img_index, img in enumerate(page.get_images(full=True)):
                 xref = img[0]
                 base_image = self._document.extract_image(xref)
-                if (base_image
-                        and base_image.get("width", 0) > 100
-                        and base_image.get("height", 0) > 100):
+                if (
+                    base_image
+                    and base_image.get("width", 0) > 100
+                    and base_image.get("height", 0) > 100
+                ):
                     images.append({
                         'image': base_image['image'],
                         'ext': base_image['ext'],
-                        'index': img_index
+                        'width': base_image.get('width', 0),
+                        'height': base_image.get('height', 0),
+                        'index': img_index,
                     })
         except Exception as e:
             logger.warning(
@@ -367,14 +511,33 @@ class DocumentHandler:
         return images
 
     def render_page_as_image(self, page_index: int) -> Optional[bytes]:
+        """Renderuje stronę PDF jako PNG (podgląd, 144 DPI)."""
         if self.file_type != 'pdf':
             return None
         try:
             page = self._document.load_page(page_index)
-            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            pix = page.get_pixmap(
+                matrix=fitz.Matrix(RENDER_SCALE_PREVIEW, RENDER_SCALE_PREVIEW)
+            )
             return pix.tobytes("png")
         except Exception as e:
             logger.error(
                 "Błąd podczas renderowania strony %d: %s", page_index + 1, e
+            )
+            return None
+
+    def render_page_highres(self, page_index: int) -> Optional[bytes]:
+        """Renderuje stronę PDF jako PNG w wysokiej rozdzielczości (216 DPI)."""
+        if self.file_type != 'pdf':
+            return None
+        try:
+            page = self._document.load_page(page_index)
+            pix = page.get_pixmap(
+                matrix=fitz.Matrix(RENDER_SCALE_HIGHRES, RENDER_SCALE_HIGHRES)
+            )
+            return pix.tobytes("png")
+        except Exception as e:
+            logger.error(
+                "Błąd podczas renderowania strony %d (highres): %s", page_index + 1, e
             )
             return None
