@@ -13,7 +13,24 @@ const state = {
     projectName: null,
     processing: false,
     _sseAbort: null,  // AbortController dla aktywnego SSE streamu
+    serverLimits: { max_bytes: 500 * 1024 * 1024, max_mb: 500, is_cloud_run: false },
 };
+
+// Pobierz limity serwera przy starcie
+fetch('/upload/limits')
+    .then(r => r.json())
+    .then(limits => {
+        state.serverLimits = limits;
+        if (limits.is_cloud_run) {
+            // Pokaż ostrzeżenie w strefie uploadu
+            const hint = document.createElement('p');
+            hint.className = 'upload-formats';
+            hint.style.color = 'var(--warning)';
+            hint.textContent = `⚠️ Środowisko Cloud Run: max ${limits.max_mb} MB. Większe pliki wymagają lokalnego serwera.`;
+            document.getElementById('upload-zone').appendChild(hint);
+        }
+    })
+    .catch(() => { /* ignoruj — używaj domyślnych limitów */ });
 
 // ===== TAB VISIBILITY HANDLER =====
 
@@ -55,41 +72,114 @@ fileInput.addEventListener('change', () => {
 });
 
 async function uploadFile(file) {
-    const uploadSection = document.getElementById('upload-section');
-    const progress = document.getElementById('upload-progress');
     const zone = document.getElementById('upload-zone');
+    const progressEl = document.getElementById('upload-progress');
+
+    // ---- Walidacja rozmiaru PRZED wysłaniem ----
+    const maxBytes = state.serverLimits.max_bytes;
+    const maxMB = state.serverLimits.max_mb;
+    if (file.size > maxBytes) {
+        const fileMB = (file.size / 1024 / 1024).toFixed(1);
+        const msg = state.serverLimits.is_cloud_run
+            ? `Plik za duży (${fileMB} MB). Cloud Run obsługuje max ${maxMB} MB. Uruchom aplikację lokalnie dla dużych plików.`
+            : `Plik za duży (${fileMB} MB). Maksymalny rozmiar to ${maxMB} MB.`;
+        showToast(msg, 'error');
+        return;
+    }
 
     zone.classList.add('hidden');
-    progress.classList.remove('hidden');
+    progressEl.classList.remove('hidden');
 
-    const formData = new FormData();
-    formData.append('file', file);
+    // Pokaż rozmiar pliku
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    const progressMsg = progressEl.querySelector('p');
+    progressMsg.textContent = `Wysyłanie pliku (${sizeMB} MB)… 0%`;
 
-    try {
-        const resp = await fetch('/upload', { method: 'POST', body: formData });
-        const data = await resp.json();
+    return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        const formData = new FormData();
+        formData.append('file', file);
 
-        if (data.error) {
-            showToast(data.error, 'error');
+        // ---- Progress bar uploadu ----
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+                const pct = Math.round(e.loaded / e.total * 100);
+                progressMsg.textContent = `Wysyłanie pliku (${sizeMB} MB)… ${pct}%`;
+                const fill = document.getElementById('upload-progress-fill');
+                if (fill) fill.style.width = pct + '%';
+            }
+        });
+
+        xhr.upload.addEventListener('load', () => {
+            progressMsg.textContent = `Plik wysłany (${sizeMB} MB). Analizowanie stron PDF…`;
+            const fill = document.getElementById('upload-progress-fill');
+            if (fill) fill.style.width = '100%';
+        });
+
+        // ---- Odpowiedź ----
+        xhr.addEventListener('load', () => {
+            let data;
+            try {
+                // Bezpieczne parsowanie — serwer może zwrócić HTML przy błędzie
+                const ct = xhr.getResponseHeader('Content-Type') || '';
+                if (!ct.includes('application/json')) {
+                    // Serwer zwrócił HTML (np. 413 od nginx/gunicorn bez handlera)
+                    const httpStatus = xhr.status;
+                    if (httpStatus === 413) {
+                        data = { error: `Plik zbyt duży dla serwera (HTTP 413). Maksimum: 500 MB.` };
+                    } else {
+                        data = { error: `Błąd serwera HTTP ${httpStatus}. Sprawdź logi.` };
+                    }
+                } else {
+                    data = JSON.parse(xhr.responseText);
+                }
+            } catch (parseErr) {
+                data = { error: `Nieoczekiwana odpowiedź serwera (status ${xhr.status}).` };
+            }
+
+            if (data.error) {
+                showToast(data.error, 'error');
+                zone.classList.remove('hidden');
+                progressEl.classList.add('hidden');
+                progressMsg.textContent = 'Ładowanie pliku…';
+                resolve();
+                return;
+            }
+
+            state.totalPages = data.total_pages;
+            state.filename = data.filename;
+            state.fileType = data.file_type;
+            state.projectName = data.project_name;
+            state.currentPage = 1;
+
+            initWorkspace();
+            showToast(`Załadowano: ${data.filename} (${data.total_pages} stron)`, 'success');
+            progressMsg.textContent = 'Ładowanie pliku…';
+            resolve();
+        });
+
+        // ---- Błędy sieciowe ----
+        xhr.addEventListener('error', () => {
+            showToast('Błąd sieci podczas uploadu. Sprawdź połączenie.', 'error');
             zone.classList.remove('hidden');
-            progress.classList.add('hidden');
-            return;
-        }
+            progressEl.classList.add('hidden');
+            progressMsg.textContent = 'Ładowanie pliku…';
+            resolve();
+        });
 
-        state.totalPages = data.total_pages;
-        state.filename = data.filename;
-        state.fileType = data.file_type;
-        state.projectName = data.project_name;
-        state.currentPage = 1;
+        xhr.addEventListener('timeout', () => {
+            showToast('Timeout uploadu — plik zbyt duży lub serwer przeciążony.', 'error');
+            zone.classList.remove('hidden');
+            progressEl.classList.add('hidden');
+            progressMsg.textContent = 'Ładowanie pliku…';
+            resolve();
+        });
 
-        initWorkspace();
-        showToast(`Załadowano: ${data.filename} (${data.total_pages} stron)`, 'success');
-
-    } catch (err) {
-        showToast('Błąd uploadu: ' + err.message, 'error');
-        zone.classList.remove('hidden');
-        progress.classList.add('hidden');
-    }
+        // Timeout: 10 minut dla bardzo dużych plików
+        xhr.timeout = 10 * 60 * 1000;
+        xhr.open('POST', '/upload');
+        xhr.send(formData);
+    });
 }
 
 // ===== WORKSPACE INIT =====

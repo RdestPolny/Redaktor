@@ -38,6 +38,27 @@ app = Flask(__name__)
 app.secret_key = os.urandom(24)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500 MB
 
+# ===== ERROR HANDLERS (zawsze JSON, nigdy HTML) =====
+
+@app.errorhandler(413)
+def request_entity_too_large(e):
+    """Plik za duży — zwraca JSON zamiast domyślnego HTML."""
+    return jsonify(
+        error="Plik jest za duży. Maksymalny rozmiar to 500 MB.",
+        code=413,
+    ), 413
+
+@app.errorhandler(400)
+def bad_request(e):
+    return jsonify(error=f"Błędne żądanie: {e}", code=400), 400
+
+@app.errorhandler(500)
+def internal_error(e):
+    logger.error("Internal server error: %s", e)
+    return jsonify(error="Wewnętrzny błąd serwera. Spróbuj ponownie.", code=500), 500
+
+# ==================================================
+
 # Stan dokumentów w pamięci serwera (single-user per instance)
 # Na Cloud Run każdy kontener obsługuje jednego użytkownika naraz
 _state = {
@@ -81,6 +102,27 @@ def index():
 
 
 # ===== ROUTES: UPLOAD =====
+
+# Wykryj środowisko: Cloud Run ma zmienną K_SERVICE
+_IS_CLOUD_RUN = bool(os.environ.get('K_SERVICE'))
+# Cloud Run twardym limitem requestu jest 32MB
+_MAX_UPLOAD_BYTES = 32 * 1024 * 1024 if _IS_CLOUD_RUN else (500 * 1024 * 1024)
+
+
+@app.route('/upload/limits')
+def upload_limits():
+    """Zwraca limity uploadu dla bieżącego środowiska."""
+    return jsonify(
+        max_bytes=_MAX_UPLOAD_BYTES,
+        max_mb=round(_MAX_UPLOAD_BYTES / 1024 / 1024),
+        is_cloud_run=_IS_CLOUD_RUN,
+        message=(
+            "Cloud Run: max 32 MB. Dla większych plików uruchom aplikację lokalnie."
+            if _IS_CLOUD_RUN else
+            "Lokalny serwer: max 500 MB."
+        ),
+    )
+
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
