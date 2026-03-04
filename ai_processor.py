@@ -68,7 +68,7 @@ class AIProcessor:
         """Fabryka: model do generowania artykułu SEO z pełnym kontekstem."""
         return cls(MODEL_ARTYKUL)
 
-    def _call(self, system_prompt: str, user_content: str, max_tokens: int = 8192) -> str:
+    def _call(self, system_prompt: str, user_content: str) -> str:
         """Bazowe wywołanie Gemini z error handlingiem."""
         try:
             response = self.client.models.generate_content(
@@ -76,8 +76,6 @@ class AIProcessor:
                 contents=user_content,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
-                    max_output_tokens=max_tokens,
-                    temperature=0.3,
                 ),
             )
             return response.text or ""
@@ -88,14 +86,7 @@ class AIProcessor:
     # ===== TRYB 1: LEKKA REDAKCJA =====
 
     def edit_page_text(self, raw_text: str) -> str:
-        """Lekka redakcja tekstu — formatowanie i korekta bez zmiany treści.
-
-        Zasada: zostawiamy słowa, zdania, kolejność. Poprawiamy:
-        - Akapity i formatowanie Markdown
-        - Łączenie przerywanych zdań (artefakty PDF)
-        - Oczywiste literówki
-        - Usuwanie duplikatów i śmieciowych fragmentów (numery stron, etc.)
-        """
+        """Lekka redakcja tekstu — formatowanie i korekta bez zmiany treści."""
         if not raw_text or not raw_text.strip():
             return raw_text
 
@@ -117,7 +108,7 @@ class AIProcessor:
             "Zwróć TYLKO poprawiony tekst w Markdown, bez żadnych komentarzy."
         )
 
-        return self._call(system, raw_text, max_tokens=4096)
+        return self._call(system, raw_text)
 
     # ===== TRYB 2: GENERATOR SEO =====
 
@@ -128,15 +119,7 @@ class AIProcessor:
         audience: str = "",
         topic_hint: str = "",
     ) -> dict:
-        """Generuje nowy artykuł SEO na podstawie treści z PDF.
-
-        Zwraca dict:
-        {
-            'title': str,
-            'meta_description': str,
-            'article': str,   # Markdown
-        }
-        """
+        """Generuje nowy artykuł SEO na podstawie treści z PDF."""
         combined = "\n\n---\n\n".join(source_texts)
 
         audience_line = f"Grupa docelowa: {audience}" if audience else ""
@@ -173,10 +156,10 @@ class AIProcessor:
             f"{audience_line}\n"
             f"{topic_line}\n\n"
             "=== MATERIAŁ ŹRÓDŁOWY ===\n\n"
-            f"{combined[:12000]}"  # limit tokenów
+            f"{combined}"
         )
 
-        raw = self._call(system, user_content, max_tokens=8192)
+        raw = self._call(system, user_content)
 
         # Parsuj odpowiedź
         return self._parse_seo_response(raw)

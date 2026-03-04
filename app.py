@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 
 
+import concurrent.futures
 import streamlit as st
 
 from document_handler import DocumentHandler, DOCX_AVAILABLE, MAMMOTH_AVAILABLE
@@ -76,6 +77,7 @@ def _init():
         "total_pages": 0,
         "current_page": 1,
         "transcriptions": {},   # {page_num: edited_text}
+        "processing": False,
         "seo_result": None,
     }
     for k, v in defaults.items():
@@ -92,6 +94,21 @@ def _load_document(uploaded_file) -> "DocumentHandler | None":
     except Exception as e:
         st.error(f"Błąd wczytywania: {e}")
         return None
+
+def _redact_page(page_num: int):
+    """Worker function for parallel redaction."""
+    try:
+        doc = st.session_state.doc
+        pc = doc.extract_page_content(page_num - 1)
+        if not pc.text.strip():
+            return page_num, ""
+        
+        ai = AIProcessor.redakcja()
+        result = ai.edit_page_text(pc.text)
+        return page_num, result
+    except Exception as e:
+        logger.error(f"Error redacting page {page_num}: {e}")
+        return page_num, None
 
 # ===== SIDEBAR =====
 
@@ -161,6 +178,27 @@ with st.sidebar:
             f"**Redakcja:** `{MODEL_REDAKCJA}`\n\n"
             f"**Artykuł:** `{MODEL_ARTYKUL}`"
         )
+        
+        st.divider()
+        if st.button("🚀 Redaguj wszystko (Równolegle)", type="primary", use_container_width=True, disabled=st.session_state.processing):
+            pages_to_do = [p for p in range(1, total + 1) if p not in st.session_state.transcriptions]
+            if pages_to_do:
+                st.session_state.processing = True
+                progress_bar = st.progress(0, text="Uruchamiam przetwarzanie równoległe...")
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
+                    done_count = 0
+                    for future in concurrent.futures.as_completed(future_to_page):
+                        page_num, result = future.result()
+                        if result is not None:
+                            st.session_state.transcriptions[page_num] = result
+                        done_count += 1
+                        progress_bar.progress(done_count / len(pages_to_do), text=f"Postęp: {done_count}/{len(pages_to_do)} stron")
+                
+                st.session_state.processing = False
+                st.success("Przetwarzanie zakończone!")
+                st.rerun()
 
 # ===== WELCOME SCREEN =====
 
@@ -198,237 +236,110 @@ doc: DocumentHandler = st.session_state.doc
 current_page: int = st.session_state.current_page
 total_pages: int = st.session_state.total_pages
 
-tab_biezaca, tab_zakres, tab_caly, tab_seo, tab_grafiki = st.tabs([
-    "📄 Bieżąca strona",
-    "📋 Zakres stron",
-    "📚 Cały dokument",
-    "🔍 Artykuł SEO",
-    "🖼️ Grafiki",
-])
-
 # ══════════════════════════════════════════════════════════════
-# TAB 1 — BIEŻĄCA STRONA
+# GŁÓWNY INTERFEJS — SIDE BY SIDE
 # ══════════════════════════════════════════════════════════════
 
-with tab_biezaca:
-    col_pdf, col_txt = st.columns([1, 1], gap="large")
+st.subheader(f"Strona {current_page} z {total_pages}")
 
-    with col_pdf:
-        st.subheader(f"Podgląd — strona {current_page}")
-        img = doc.render_page_as_image(current_page - 1)
-        if img:
-            st.image(img, use_container_width=True)
-        else:
-            st.info("Podgląd niedostępny.")
+col_orig, col_redacted = st.columns(2, gap="large")
 
-    with col_txt:
-        st.subheader(f"Treść strony {current_page}")
-        pc = doc.extract_page_content(current_page - 1)
+with col_orig:
+    st.markdown("### 📄 Oryginał (PDF)")
+    img = doc.render_page_as_image(current_page - 1)
+    if img:
+        st.image(img, use_container_width=True)
+    else:
+        st.info("Podgląd niedostępny.")
 
-        if not pc.text.strip():
-            st.warning("Brak tekstu na tej stronie.")
-        elif current_page in st.session_state.transcriptions:
-            st.success("✅ Przetworzona przez AI")
-            edited = st.text_area(
-                "Treść po redakcji:",
-                value=st.session_state.transcriptions[current_page],
-                height=500,
-                key=f"edit_{current_page}",
-            )
-            st.session_state.transcriptions[current_page] = edited
-
-            c1, c2 = st.columns(2)
-            with c1:
-                st.download_button(
-                    "⬇️ Pobierz TXT",
-                    data=edited.encode("utf-8"),
-                    file_name=f"{Path(doc.filename).stem}_str{current_page}.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-            with c2:
-                if st.button("🔄 Cofnij", use_container_width=True):
-                    del st.session_state.transcriptions[current_page]
-                    st.rerun()
-        else:
-            st.text_area("Surowy tekst:", value=pc.text, height=400,
-                         disabled=True, key=f"raw_{current_page}")
-
-            if st.button("🤖 Redaguj AI", type="primary",
-                         use_container_width=True, key=f"btn_{current_page}"):
-                with st.spinner("Redaguję…"):
-                    try:
-                        result = AIProcessor.redakcja().edit_page_text(pc.text)
-                        st.session_state.transcriptions[current_page] = result
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Błąd AI: {e}")
-
-    # Eksport wszystkich zredagowanych
-    done_count = len(st.session_state.transcriptions)
-    if done_count:
-        st.divider()
-        with st.expander(f"📥 Eksport wszystkich zredagowanych stron ({done_count})", expanded=False):
-            _all = "\n\n".join(
-                f"{'='*60}\nSTRONA {pg}\n{'='*60}\n\n{txt}"
-                for pg, txt in sorted(st.session_state.transcriptions.items())
-            )
+with col_redacted:
+    st.markdown("### 🤖 Redakcja AI")
+    
+    if current_page in st.session_state.transcriptions:
+        edited = st.text_area(
+            "Edytowany tekst:",
+            value=st.session_state.transcriptions[current_page],
+            height=600,
+            key=f"edit_{current_page}",
+        )
+        st.session_state.transcriptions[current_page] = edited
+        
+        c1, c2 = st.columns(2)
+        with c1:
             st.download_button(
-                f"⬇️ Pobierz {done_count} stron (TXT)",
-                data=_all.encode("utf-8"),
-                file_name=f"{Path(doc.filename).stem}_redakcja.txt",
+                "⬇️ Pobierz TXT",
+                data=edited.encode("utf-8"),
+                file_name=f"{Path(doc.filename).stem}_str{current_page}.txt",
                 mime="text/plain",
                 use_container_width=True,
             )
-
-# ══════════════════════════════════════════════════════════════
-# TAB 2 — ZAKRES STRON
-# ══════════════════════════════════════════════════════════════
-
-with tab_zakres:
-    st.subheader("📋 Redakcja zakresu stron")
-    st.caption(
-        f"Każda strona jest redagowana osobno — model: `{MODEL_REDAKCJA}`. "
-        "Wyniki trafiają do tej samej puli co strony z zakładki Bieżąca."
-    )
-
-    c1, c2, c3 = st.columns([1, 1, 2])
-    with c1:
-        z_from = st.number_input("Od strony:", 1, total_pages, 1)
-    with c2:
-        z_to = st.number_input("Do strony:", 1, total_pages, min(total_pages, 10))
-    with c3:
-        st.write("")  # padding
-
-    if z_from > z_to:
-        st.error("'Od' musi być ≤ 'Do'.")
+        with c2:
+            if st.button("🔄 Cofnij", use_container_width=True):
+                del st.session_state.transcriptions[current_page]
+                st.rerun()
     else:
-        n_pages = z_to - z_from + 1
-        already_done = sum(1 for p in range(z_from, z_to + 1)
-                           if p in st.session_state.transcriptions)
-        st.caption(
-            f"Zakres: **{n_pages}** stron ({z_from}–{z_to}). "
-            f"Już zredagowane: {already_done}/{n_pages}."
-        )
+        pc = doc.extract_page_content(current_page - 1)
+        if not pc.text.strip():
+            st.warning("Brak tekstu na tej stronie.")
+        else:
+            st.text_area("Surowy tekst:", value=pc.text, height=400, disabled=True)
+            if st.button("🤖 Redaguj tę stronę", type="primary", use_container_width=True):
+                with st.spinner("Przetwarzanie..."):
+                    _, result = _redact_page(current_page)
+                    if result:
+                        st.session_state.transcriptions[current_page] = result
+                        st.rerun()
 
-        btn_label = f"🤖 Redaguj strony {z_from}–{z_to}"
-        if st.button(btn_label, type="primary"):
-            progress = st.progress(0, text="Przygotowanie…")
-            errors = []
-            ai = AIProcessor.redakcja()
+st.divider()
 
-            for i, page_num in enumerate(range(z_from, z_to + 1)):
-                progress.progress(
-                    i / n_pages,
-                    text=f"Redaguję stronę {page_num} ({i+1}/{n_pages})…"
-                )
-                if page_num in st.session_state.transcriptions:
-                    continue  # pomijaj już zredagowane
-                pc = doc.extract_page_content(page_num - 1)
-                if not pc.text.strip():
-                    continue
-                try:
-                    result = ai.edit_page_text(pc.text)
-                    st.session_state.transcriptions[page_num] = result
-                except Exception as e:
-                    errors.append(f"Strona {page_num}: {e}")
+# TABS for other tools
+tab_seo, tab_grafiki, tab_batch = st.tabs([
+    "🔍 Artykuł SEO",
+    "🖼️ Grafiki",
+    "📋 Narzędzia zbiorcze"
+])
 
-            progress.progress(1.0, text="✅ Gotowe!")
-            if errors:
-                st.warning("Błędy:\n" + "\n".join(errors))
-            else:
-                st.success(f"✅ Zredagowano {n_pages} stron!")
-            st.rerun()
-
-        # Podgląd wyników dla zakresu
-        range_done = {p: st.session_state.transcriptions[p]
-                      for p in range(z_from, z_to + 1)
-                      if p in st.session_state.transcriptions}
-        if range_done:
-            st.divider()
-            st.caption(f"Zredagowane strony w zakresie: {len(range_done)}/{n_pages}")
-            all_text = "\n\n".join(
-                f"{'='*60}\nSTRONA {pg}\n{'='*60}\n\n{txt}"
-                for pg, txt in sorted(range_done.items())
-            )
-            st.download_button(
-                f"⬇️ Pobierz zakres {z_from}–{z_to} ({len(range_done)} stron, TXT)",
-                data=all_text.encode("utf-8"),
-                file_name=f"{Path(doc.filename).stem}_str{z_from}-{z_to}.txt",
-                mime="text/plain",
-            )
-            with st.expander("Podgląd zredagowanych stron", expanded=False):
-                for pg, txt in sorted(range_done.items()):
-                    st.markdown(f"**Strona {pg}**")
-                    st.text(txt[:500] + ("…" if len(txt) > 500 else ""))
-                    st.divider()
-
-# ══════════════════════════════════════════════════════════════
-# TAB 3 — CAŁY DOKUMENT
-# ══════════════════════════════════════════════════════════════
-
-with tab_caly:
-    st.subheader("📚 Redakcja całego dokumentu")
-    st.caption(
-        f"Każda strona redagowana osobno — model: `{MODEL_REDAKCJA}`. "
-        f"Łącznie **{total_pages}** stron. Każda strona = osobne zapytanie do AI."
-    )
-
-    done_total = len(st.session_state.transcriptions)
-    remaining = total_pages - done_total
-    st.caption(f"Zredagowane: **{done_total}** / pominięte lub pozostałe: **{remaining}**")
-
-    col_btn, col_skip = st.columns([2, 1])
-    with col_btn:
-        if st.button("🚀 Redaguj cały dokument", type="primary",
-                     disabled=remaining == 0):
-            progress = st.progress(0, text="Przygotowanie…")
-            errors = []
-            ai = AIProcessor.redakcja()
-
-            for i in range(total_pages):
-                page_num = i + 1
-                progress.progress(
-                    i / total_pages,
-                    text=f"Redaguję stronę {page_num}/{total_pages}…"
-                )
-                if page_num in st.session_state.transcriptions:
-                    continue  # pomijaj już zredagowane
-                pc = doc.extract_page_content(i)
-                if not pc.text.strip():
-                    continue
-                try:
-                    result = ai.edit_page_text(pc.text)
-                    st.session_state.transcriptions[page_num] = result
-                except Exception as e:
-                    errors.append(f"Strona {page_num}: {e}")
-
-            progress.progress(1.0, text="✅ Gotowe!")
-            if errors:
-                st.warning("Błędy na stronach:\n" + "\n".join(errors))
-            st.success(f"✅ Dokument zredagowany!")
-            st.rerun()
-
-    with col_skip:
-        if st.button("🗑️ Wyczyść wszystkie", type="secondary",
-                     disabled=done_total == 0):
+with tab_batch:
+    st.subheader("📋 Narzędzia zbiorcze")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚀 Redaguj Brakujące Strony", use_container_width=True):
+            # To samo co w sidebarze ale tutaj widoczne
+            pages_to_do = [p for p in range(1, total_pages + 1) if p not in st.session_state.transcriptions]
+            if pages_to_do:
+                with st.status("Przetwarzanie równoległe...") as status:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                        future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
+                        for future in concurrent.futures.as_completed(future_to_page):
+                            p_num, res = future.result()
+                            if res:
+                                st.session_state.transcriptions[p_num] = res
+                            st.write(f"Zakończono stronę {p_num}")
+                    status.update(label="Gotowe!", state="complete")
+                    st.rerun()
+    
+    with c2:
+        if st.button("🗑️ Wyczyść wszystko", type="secondary", use_container_width=True):
             st.session_state.transcriptions = {}
             st.rerun()
 
     # Eksport całości
-    if st.session_state.transcriptions:
+    done_count = len(st.session_state.transcriptions)
+    if done_count:
         st.divider()
-        all_text = "\n\n".join(
+        _all = "\n\n".join(
             f"{'='*60}\nSTRONA {pg}\n{'='*60}\n\n{txt}"
             for pg, txt in sorted(st.session_state.transcriptions.items())
         )
         st.download_button(
-            f"⬇️ Pobierz cały dokument ({done_total} stron, TXT)",
-            data=all_text.encode("utf-8"),
-            file_name=f"{Path(doc.filename).stem}_cały.txt",
+            f"⬇️ Pobierz wszystkie zredagowane strony ({done_count})",
+            data=_all.encode("utf-8"),
+            file_name=f"{Path(doc.filename).stem}_redakcja_calosc.txt",
             mime="text/plain",
             use_container_width=True,
         )
+
 
 # ══════════════════════════════════════════════════════════════
 # TAB 4 — ARTYKUŁ SEO
