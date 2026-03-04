@@ -43,12 +43,17 @@
             <div class="open-path-zone">
                 <div class="upload-icon">📂</div>
                 <h2>Otwórz z dysku</h2>
-                <p>Podaj lokalną ścieżkę do pliku</p>
+                <p>Kliknij aby wybrać plik z eksploratora</p>
                 <p class="upload-formats">Bez limitu rozmiaru · działa tylko lokalnie</p>
                 <div class="path-input-row">
-                    <input type="text" id="path-input" class="path-input" placeholder="/Users/ty/Dokumenty/plik.pdf"
-                        spellcheck="false" autocomplete="off">
-                    <button class="btn btn-primary" onclick="openFromPath()">Otwórz</button>
+                    <input type="text" id="path-input" class="path-input"
+                        placeholder="Kliknij 'Wybierz…' aby wskazać plik" readonly spellcheck="false">
+                    <button class="btn btn-secondary" id="btn-browse" onclick="browseFile()">
+                        🗂 Wybierz…
+                    </button>
+                    <button class="btn btn-primary" id="btn-open-path" onclick="openFromPath()" disabled>
+                        Otwórz
+                    </button>
                 </div>
             </div>
 

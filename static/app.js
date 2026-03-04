@@ -71,32 +71,97 @@ fileInput.addEventListener('change', () => {
     }
 });
 
-// Obsługa Enter w polu ścieżki
+// Sprawdź dostępność natywnego dialogu przy starcie
+let _browseAvailable = !state.serverLimits.is_cloud_run; // optymistyczne założenie lokalnie
+
 document.addEventListener('DOMContentLoaded', () => {
+    // Sprawdź czy /pick-file jest dostępny
+    fetch('/pick-file')
+        .then(r => r.json())
+        .then(data => {
+            _browseAvailable = data.available !== false;
+            if (!_browseAvailable) {
+                // Przełącz panel na ręczne wpisywanie ścieżki
+                const pathInput = document.getElementById('path-input');
+                const browseBtn = document.getElementById('btn-browse');
+                const openBtn = document.getElementById('btn-open-path');
+                if (pathInput) {
+                    pathInput.removeAttribute('readonly');
+                    pathInput.placeholder = '/Users/ty/Dokumenty/plik.pdf';
+                }
+                if (browseBtn) browseBtn.classList.add('hidden');
+                if (openBtn) {
+                    openBtn.disabled = false;
+                    openBtn.textContent = 'Otwórz';
+                }
+            }
+        })
+        .catch(() => { _browseAvailable = false; });
+
+    // Obsługa Enter w polu ścieżki (tryb ręczny)
     const pathInput = document.getElementById('path-input');
     if (pathInput) {
         pathInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') openFromPath();
         });
-        // Drag & drop ścieżki tekstowej na pole (np. z Findera)
-        pathInput.addEventListener('drop', (e) => {
-            e.preventDefault();
-            const text = e.dataTransfer.getData('text');
-            if (text) pathInput.value = text.trim();
+        pathInput.addEventListener('input', () => {
+            const openBtn = document.getElementById('btn-open-path');
+            if (openBtn) openBtn.disabled = !pathInput.value.trim();
         });
     }
 });
+
+async function browseFile() {
+    const browseBtn = document.getElementById('btn-browse');
+    if (browseBtn) { browseBtn.disabled = true; browseBtn.textContent = '⏳ Wybieram…'; }
+
+    try {
+        const resp = await fetch('/pick-file');
+        const data = await resp.json();
+
+        if (!data.available) {
+            // Fallback — ukryj przycisk browse, pozwól wpisać ręcznie
+            showToast(data.reason || 'Wybór pliku niedostępny.', 'error');
+            const pathInput = document.getElementById('path-input');
+            if (pathInput) { pathInput.removeAttribute('readonly'); pathInput.placeholder = '/ścieżka/do/pliku.pdf'; pathInput.focus(); }
+            if (browseBtn) browseBtn.classList.add('hidden');
+            const openBtn = document.getElementById('btn-open-path');
+            if (openBtn) openBtn.disabled = false;
+            return;
+        }
+
+        if (!data.path) {
+            // Użytkownik anulował dialog — nic nie rób
+            return;
+        }
+
+        // Ustaw wybraną ścieżkę
+        const pathInput = document.getElementById('path-input');
+        if (pathInput) pathInput.value = data.path;
+
+        const openBtn = document.getElementById('btn-open-path');
+        if (openBtn) openBtn.disabled = false;
+
+        // Automatycznie otwórz plik bez dodatkowego kliknięcia
+        await openFromPath();
+
+    } catch (err) {
+        showToast('Błąd wyboru pliku: ' + err.message, 'error');
+    } finally {
+        if (browseBtn) { browseBtn.disabled = false; browseBtn.textContent = '🗂 Wybierz…'; }
+    }
+}
 
 async function openFromPath() {
     const pathInput = document.getElementById('path-input');
     const filePath = pathInput ? pathInput.value.trim() : '';
 
     if (!filePath) {
-        showToast('Wpisz ścieżkę do pliku.', 'error');
+        showToast('Wybierz plik lub wpisz ścieżkę.', 'error');
         return;
     }
 
-    const uploadSection = document.getElementById('upload-options') || document.querySelector('.upload-options');
+    const uploadSection = document.querySelector('.upload-options');
     const progressEl = document.getElementById('upload-progress');
     const progressMsg = progressEl.querySelector('p');
 

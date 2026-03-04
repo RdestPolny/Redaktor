@@ -13,6 +13,14 @@ import tempfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# tkinter do natywnego okna wyboru pliku (stdlib, brak instalacji)
+try:
+    import tkinter as tk
+    from tkinter import filedialog as tk_filedialog
+    _TKINTER_AVAILABLE = True
+except ImportError:
+    _TKINTER_AVAILABLE = False
+
 from flask import (
     Flask, request, jsonify, render_template,
     send_file, session, Response, stream_with_context,
@@ -230,6 +238,56 @@ def open_path():
         logger.error("open-path error: %s", e)
         return jsonify(error=str(e)), 400
 
+
+@app.route('/pick-file')
+def pick_file():
+    """Otwiera natywne okno wyboru pliku po stronie serwera (tylko lokalnie).
+
+    Zwraca JSON:
+    - { available: true, path: "/wybrana/ścieżka.pdf" } — plik wybrany
+    - { available: true, path: null }                   — użytkownik anulował
+    - { available: false, reason: "..." }               — tkinter niedostępny (Cloud Run)
+    """
+    if _IS_CLOUD_RUN:
+        return jsonify(
+            available=False,
+            reason="Okno wyboru pliku działa tylko na lokalnym serwerze."
+        )
+
+    if not _TKINTER_AVAILABLE:
+        return jsonify(
+            available=False,
+            reason="tkinter niedostępny w tym środowisku Python."
+        )
+
+    try:
+        # tkinter wymaga głównego wątku na macOS — używamy osobnego miniwindow
+        root = tk.Tk()
+        root.withdraw()          # ukryj główne okno
+        root.lift()              # wysuń na wierzch
+        root.attributes("-topmost", True)  # zawsze na wierzchu
+        root.update()
+
+        path = tk_filedialog.askopenfilename(
+            parent=root,
+            title="Wybierz dokument",
+            filetypes=[
+                ("Dokumenty", "*.pdf *.docx *.doc"),
+                ("PDF", "*.pdf"),
+                ("Word", "*.docx *.doc"),
+                ("Wszystkie pliki", "*.*"),
+            ],
+        )
+        root.destroy()
+
+        return jsonify(
+            available=True,
+            path=path if path else None,
+        )
+
+    except Exception as e:
+        logger.error("pick-file error: %s", e)
+        return jsonify(available=False, reason=str(e))
 
 
 # ===== ROUTES: PAGE DATA =====

@@ -180,6 +180,11 @@ body {
     color: var(--text-muted);
 }
 
+.path-input[readonly] {
+    cursor: default;
+    color: var(--text-secondary);
+}
+
 /* Upload zone (lewy panel) — dopasowania */
 .upload-zone {
     flex: 1;

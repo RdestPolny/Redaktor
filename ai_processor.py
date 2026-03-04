@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ===== KONFIGURACJA =====
 
 MAX_RETRIES = 3
-DEFAULT_MODEL = "gemini-2.5-flash-lite-preview-06-17"
+DEFAULT_MODEL = "gemini-3.5-flash-lite-preview-06-17"
 API_KEY = "AIzaSyAl69MEfwxVIiU7sX6M3u-KOqVI_c782Yc"
 
 
