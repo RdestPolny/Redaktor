@@ -69,7 +69,7 @@ def _init():
         "seo_source_texts": None,  # teksty stron użyte w pipeline
         "seo_page_range": "",      # zakres stron np. '10-15'
         "active_mode": "Lekka Redakcja (Korekta + HTML)",
-        "redaction_scope": "Bieżąca strona",
+        "redaction_scope": "Cały dokument",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -100,6 +100,13 @@ def _parse_page_range(text: str, total: int):
         if 1 <= a <= total:
             return a, a
     return None
+
+def _init_doc(uploaded_file):
+    try:
+        return DocumentHandler(uploaded_file, uploaded_file.name)
+    except Exception as e:
+        st.error(f"Błąd wczytywania: {e}")
+        return None
 
 def _load_document(uploaded_file) -> "DocumentHandler | None":
     try:
@@ -170,7 +177,7 @@ with col_settings:
     if mode == "Lekka Redakcja (Korekta + HTML)":
         scope = st.selectbox(
             "Zakres przetwarzania:",
-            ["Bieżąca strona", "Zakres stron (np. 1-5)", "Artykuł wielostronicowy"],
+            ["Cały dokument", "Bieżąca strona", "Zakres stron (np. 1-5)", "Artykuł wielostronicowy"],
             index=0
         )
         st.session_state.redaction_scope = scope
@@ -186,16 +193,8 @@ with col_settings:
             placeholder=f"max {st.session_state.get('total_pages', '?')}"
         )
 
-    with st.expander("⚙️ Zaawansowane (Modele i Klucze)", expanded=False):
-        st.markdown(f"**Redakcja:** `{MODEL_REDAKCJA}`")
-        st.markdown(f"**Artykuł:** `{MODEL_ARTYKUL}`")
-        st.markdown(f"**Research:** `{MODEL_SONAR}`")
-        st.divider()
-        st.session_state.use_perplexity = st.toggle(
-            "Używaj Perplexity Research",
-            value=st.session_state.use_perplexity,
-            help="Wyłączenie spowoduje pominięcie Etapu 2 (researchu merytorycznego) w pipeline SEO."
-        )
+    # Ukryto panel Zaawansowane (Modele i Klucze) na prośbę użytkownika
+    # st.session_state.use_perplexity pozostaje w tle (domyślnie True)
 
 if uploaded is not None:
     file_id = f"{uploaded.name}_{uploaded.size}"
@@ -212,12 +211,6 @@ if uploaded is not None:
             st.session_state.seo_result = None
             st.rerun()
 
-def _init_doc(uploaded_file):
-    try:
-        return DocumentHandler(uploaded_file, uploaded_file.name)
-    except Exception as e:
-        st.error(f"Błąd wczytywania: {e}")
-        return None
 
 if not st.session_state.doc:
     st.info("⬆️ Wgraj dokument, aby rozpocząć pracę.")
@@ -228,6 +221,28 @@ with col_settings:
     done = len(st.session_state.transcriptions)
     st.caption(f"✅ Zredagowane strony: **{done}** / {st.session_state.total_pages}")
     
+    # Obsługa zakresu "Cały dokument"
+    if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)" and st.session_state.redaction_scope == "Cały dokument":
+        if st.button("🚀 Redaguj cały dokument (Równolegle)", type="primary", use_container_width=True):
+            pages_to_do = [p for p in range(1, st.session_state.total_pages + 1) if p not in st.session_state.transcriptions]
+            if not pages_to_do:
+                st.info("Wszystkie strony są już zredagowane.")
+            else:
+                st.session_state.processing = True
+                progress_bar = st.progress(0, text="Przetwarzanie całego dokumentu...")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
+                    done_count = 0
+                    for future in concurrent.futures.as_completed(future_to_page):
+                        p_num, res = future.result()
+                        if res:
+                            st.session_state.transcriptions[p_num] = res
+                        done_count += 1
+                        progress_bar.progress(done_count / len(pages_to_do))
+                st.session_state.processing = False
+                st.success("Dokument został w całości zredagowany!")
+                st.rerun()
+
     # Obsługa zakresu "Artykuł wielostronicowy"
     if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)" and st.session_state.redaction_scope == "Artykuł wielostronicowy":
         if st.button("🚀 Redaguj jako cały artykuł", type="primary", use_container_width=True):
