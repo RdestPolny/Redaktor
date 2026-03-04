@@ -8,6 +8,7 @@ import os
 import logging
 from pathlib import Path
 
+
 import streamlit as st
 
 from document_handler import DocumentHandler, DOCX_AVAILABLE, MAMMOTH_AVAILABLE
@@ -44,6 +45,23 @@ st.markdown("""
     font-size: 0.75rem;
     color: #a78bfa;
     font-family: monospace;
+}
+
+/* Karty na ekranie powitalnym */
+.welcome-card {
+    background: #1e1e2e;
+    border: 1px solid #2d2d3f;
+    border-radius: 12px;
+    padding: 1.5rem 1.8rem;
+    min-width: 180px;
+    max-width: 220px;
+    transition: all 0.3s ease;
+    cursor: default;
+}
+.welcome-card:hover {
+    transform: translateY(-5px);
+    border-color: #7c3aed;
+    box-shadow: 0 10px 20px rgba(0,0,0,0.3);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -147,31 +165,31 @@ with st.sidebar:
 # ===== WELCOME SCREEN =====
 
 if not st.session_state.doc:
-    st.markdown("""
-    <div style="text-align:center;padding:4rem 2rem">
-        <div style="font-size:4rem;margin-bottom:1rem">📄</div>
-        <h1 style="color:#c4b5fd;margin-bottom:.5rem">Redaktor AI</h1>
-        <p style="color:#64748b;font-size:1.1rem;margin-bottom:2.5rem">
-            Wgraj dokument PDF lub Word w panelu po lewej stronie
-        </p>
-        <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap">
-    """ + "".join(f"""
-            <div style="background:#1e1e2e;border:1px solid #2d2d3f;border-radius:12px;
-                        padding:1.5rem 1.8rem;min-width:180px;max-width:220px">
-                <div style="font-size:2rem">{icon}</div>
-                <h3 style="color:#a78bfa;margin:.5rem 0 .3rem">{name}</h3>
-                <p style="color:#94a3b8;font-size:.85rem;margin:0">{desc}</p>
-            </div>
-    """ for icon, name, desc in [
-        ("📄", "Bieżąca strona", "Redakcja jednej strony + podgląd PDF"),
-        ("📋", "Zakres stron", "Redakcja zakresu strona-po-stronie"),
-        ("📚", "Cały dokument", "Cały dokument, każda strona osobno"),
-        ("🔍", "Artykuł SEO", "Nowy artykuł z kontekstem wielu stron"),
-        ("🖼️", "Grafiki", "Wyodrębnianie zdjęć i grafik"),
-    ]) + """
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    welcome_html = f"""
+<div style="text-align:center;padding:4rem 2rem">
+<div style="font-size:4rem;margin-bottom:1rem">📄</div>
+<h1 style="color:#c4b5fd;margin-bottom:.5rem">Redaktor AI</h1>
+<p style="color:#64748b;font-size:1.1rem;margin-bottom:2.5rem">
+Wgraj dokument PDF lub Word w panelu po lewej stronie
+</p>
+<div style="display:flex;gap:1.2rem;justify-content:center;flex-wrap:wrap">
+""" + "".join(f"""
+<div class="welcome-card">
+<div style="font-size:2rem">{icon}</div>
+<h3 style="color:#a78bfa;margin:.5rem 0 .3rem">{name}</h3>
+<p style="color:#94a3b8;font-size:.85rem;margin:0">{desc}</p>
+</div>
+""" for icon, name, desc in [
+    ("📄", "Bieżąca strona", "Redakcja jednej strony + podgląd PDF"),
+    ("📋", "Zakres stron", "Redakcja zakresu strona-po-stronie"),
+    ("📚", "Cały dokument", "Cały dokument, każda strona osobno"),
+    ("🔍", "Artykuł SEO", "Nowy artykuł z kontekstem wielu stron"),
+    ("🖼️", "Grafiki", "Wyodrębnianie zdjęć i grafik"),
+]) + """
+</div>
+</div>
+"""
+    st.markdown(welcome_html, unsafe_allow_html=True)
     st.stop()
 
 # ===== GŁÓWNY INTERFEJS =====
