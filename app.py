@@ -136,9 +136,8 @@ st.markdown("### 📄 Redaktor AI")
 st.caption("Ekstrakcja i redakcja treści z dokumentów PDF")
 st.divider()
 
-col_upload, col_settings = st.columns([1, 1], gap="large")
-
 if st.session_state.doc is None:
+    col_upload, col_settings = st.columns([1, 1], gap="large")
     with col_upload:
         accept = ["pdf"]
         if DOCX_AVAILABLE:
@@ -152,14 +151,17 @@ if st.session_state.doc is None:
             help="Pliki będą przetwarzane lokalnie w pamięci Streamlit."
         )
 else:
-    with col_upload:
-        st.success(f"📄 Wgrano: **{st.session_state.filename}**")
-        if st.button("🔄 Wgraj nowy plik", use_container_width=True):
+    col_settings = st.container()
+    uploaded = None
+    info_col1, info_col2 = st.columns([4, 1])
+    with info_col1:
+        st.success(f"📄 Aktywny plik: **{st.session_state.filename}**")
+    with info_col2:
+        if st.button("🔄 Wgraj nowy", use_container_width=True):
             st.session_state.doc = None
             st.session_state.file_id = None
             st.session_state.transcriptions = {}
             st.rerun()
-    uploaded = None
 
 with col_settings:
     st.markdown("##### 🛠️ Konfiguracja Pracy")
@@ -230,15 +232,38 @@ with col_settings:
             else:
                 st.session_state.processing = True
                 progress_bar = st.progress(0, text="Przetwarzanie całego dokumentu...")
+                
+                texts_to_do = {}
+                for p in pages_to_do:
+                    pc = st.session_state.doc.extract_page_content(p - 1)
+                    if pc.text.strip():
+                        texts_to_do[p] = pc.text
+                    else:
+                        st.session_state.transcriptions[p] = ""
+
+                valid_pages = [p for p in pages_to_do if texts_to_do.get(p)]
+                
+                if not valid_pages:
+                    st.session_state.processing = False
+                    st.success("Dokument został w całości zredagowany (puste strony pominięto).")
+                    st.rerun()
+
+                def _process_text(p_num, text):
+                    try:
+                        return p_num, AIProcessor.redakcja().edit_page_text(text)
+                    except Exception as e:
+                        return p_num, None
+
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
+                    future_to_page = {executor.submit(_process_text, p, texts_to_do[p]): p for p in valid_pages}
                     done_count = 0
                     for future in concurrent.futures.as_completed(future_to_page):
                         p_num, res = future.result()
                         if res:
                             st.session_state.transcriptions[p_num] = res
                         done_count += 1
-                        progress_bar.progress(done_count / len(pages_to_do))
+                        progress_bar.progress(done_count / len(valid_pages))
+                
                 st.session_state.processing = False
                 st.success("Dokument został w całości zredagowany!")
                 st.rerun()
@@ -280,12 +305,29 @@ with col_settings:
                 else:
                     st.session_state.processing = True
                     with st.status(f"Przetwarzanie stron {s_from}-{s_to}...") as status:
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                            for p in pages_to_do:
-                                _, res = _redact_page(p)
-                                if res:
-                                    st.session_state.transcriptions[p] = res
-                                    st.write(f"✅ Strona {p} gotowa")
+                        texts_to_do = {}
+                        for p in pages_to_do:
+                            pc = st.session_state.doc.extract_page_content(p - 1)
+                            if pc.text.strip():
+                                texts_to_do[p] = pc.text
+                            else:
+                                st.session_state.transcriptions[p] = ""
+                        
+                        valid_pages = [p for p in pages_to_do if texts_to_do.get(p)]
+                        if valid_pages:
+                            def _process_text(p_num, text):
+                                try:
+                                    return p_num, AIProcessor.redakcja().edit_page_text(text)
+                                except Exception:
+                                    return p_num, None
+
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                                future_to_page = {executor.submit(_process_text, p, texts_to_do[p]): p for p in valid_pages}
+                                for future in concurrent.futures.as_completed(future_to_page):
+                                    p_num, res = future.result()
+                                    if res:
+                                        st.session_state.transcriptions[p_num] = res
+                                        st.write(f"✅ Strona {p_num} gotowa")
                         status.update(label="Zakres przetworzony!", state="complete")
                     st.session_state.processing = False
                     st.rerun()
@@ -324,23 +366,28 @@ if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)":
                 st.divider()
 
     nav1, nav2, nav3 = st.columns([2, 1, 2])
+
+    def _go_prev():
+        if st.session_state.current_page > 1:
+            st.session_state.current_page -= 1
+
+    def _go_next():
+        if st.session_state.current_page < total_pages:
+            st.session_state.current_page += 1
+
+    def _go_to():
+        st.session_state.current_page = st.session_state.nav_input
+
     with nav1:
         st.subheader(f"Strona {current_page} z {total_pages}")
     with nav2:
         cc1, cc2 = st.columns(2)
         with cc1:
-            if st.button("⬅️", use_container_width=True, disabled=current_page <= 1, key="nav_prev"):
-                st.session_state.current_page -= 1
-                st.rerun()
+            st.button("⬅️", use_container_width=True, disabled=current_page <= 1, on_click=_go_prev)
         with cc2:
-            if st.button("➡️", use_container_width=True, disabled=current_page >= total_pages, key="nav_next"):
-                st.session_state.current_page += 1
-                st.rerun()
+            st.button("➡️", use_container_width=True, disabled=current_page >= total_pages, on_click=_go_next)
     with nav3:
-        pg = st.number_input("Idź do strony:", 1, total_pages, current_page, key="nav_input", label_visibility="collapsed")
-        if pg != current_page:
-            st.session_state.current_page = pg
-            st.rerun()
+        st.number_input("Idź do strony:", 1, total_pages, current_page, key="nav_input", on_change=_go_to, label_visibility="collapsed")
 
     st.divider()
 
@@ -427,19 +474,6 @@ tab_seo, tab_grafiki = st.tabs([
 
 with tab_seo:
     st.subheader("🔍 Generator artykułu SEO")
-    st.markdown(
-        f"""
-        <div style="background:#1a1a2e;border:1px solid #2d2d4f;border-radius:10px;padding:1rem 1.2rem;margin-bottom:1rem">
-        <strong style="color:#a78bfa">Pipeline 3-etapowy:</strong><br>
-        <span style="color:#94a3b8;font-size:0.85rem">
-        🧠 <b>Etap 1</b> — <code>{MODEL_ARTYKUL}</code> analizuje tekst i dobiera słowo kluczowe SEO + temat<br>
-        🔎 <b>Etap 2</b> — <code>{MODEL_SONAR}</code> (Perplexity) zbiera research merytoryczny<br>
-        ✍️ <b>Etap 3</b> — <code>{MODEL_ARTYKUL}</code> pisze artykuł (zasada odwróconej piramidy)
-        </span>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
 
     # ── INPUT: zakres stron ──────────────────────────────────────
     import re as _re_seo  # noqa: F811 (lokalnie, re już zaimportowane wyżej)
@@ -450,7 +484,7 @@ with tab_seo:
         if st.session_state.seo_page_range.strip():
             st.error(f"❌ Niepoprawny zakres: `{st.session_state.seo_page_range}`. Podaj np. `10-15` (max {total_pages}).")
         else:
-            st.info("⬅️ Podaj zakres stron w panelu Konfiguracji Pracy powyżej.")
+            st.info("Podaj zakres stron w panelu Konfiguracji Pracy powyżej.")
     else:
         s_from, s_to = parsed_range
         n_pages = s_to - s_from + 1
