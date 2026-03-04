@@ -25,15 +25,19 @@ MODEL_ARTYKUL  = "gemini-3-flash-preview"           # NIE ZMIENIAJ
 
 def _get_api_key() -> str:
     """Pobiera klucz API z Streamlit secrets lub zmiennej środowiskowej."""
-    # 1. Streamlit Cloud secrets (ustawiane w App Settings → Secrets)
+    # 1. Streamlit Cloud secrets
     try:
         import streamlit as st
-        key = st.secrets.get("GOOGLE_API_KEY", "")
-        if key:
-            return key
+        # Najpierw sprawdź płaską strukturę (GOOGLE_API_KEY=...)
+        if "GOOGLE_API_KEY" in st.secrets:
+            return st.secrets["GOOGLE_API_KEY"]
+        # Potem sprawdź strukturę z sekcją [google] api_key = ...
+        if "google" in st.secrets and "api_key" in st.secrets["google"]:
+            return st.secrets["google"]["api_key"]
     except Exception:
         pass
-    # 2. Zmienna środowiskowa (lokalnie lub Cloud Run)
+    
+    # 2. Zmienna środowiskowa
     return os.environ.get("GOOGLE_API_KEY", "")
 
 
@@ -47,7 +51,11 @@ class AIProcessor:
 
     def __init__(self, model: str):
         # Model przekazywany zawsze jawnie — nie ma domyślnego by uniknąć pomyłek
-        self.client = genai.Client(api_key=_get_api_key())
+        api_key = _get_api_key()
+        if not api_key:
+            raise ValueError("Brak klucza API (GOOGLE_API_KEY). Skonfiguruj go w secrets.toml lub w ustawieniach Streamlit Cloud.")
+        
+        self.client = genai.Client(api_key=api_key)
         self.model = model
 
     @classmethod
