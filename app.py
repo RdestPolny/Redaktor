@@ -237,15 +237,18 @@ def open_path():
 
 @app.route('/pick-file')
 def pick_file():
-    """Otwiera natywne okno wyboru pliku — uruchamia subprocess z tkinter.
+    """Otwiera natywne okno wyboru pliku przy użyciu narzędzi OS.
 
-    Subprocess ma własny main thread, co omija ograniczenie macOS/Linux
-    wymagające tkinter na głównym wątku procesu.
+    Strategia (próbuje kolejno):
+    - macOS:   osascript (AppleScript) — zawsze działa, pojawia się na wierzchu
+    - Linux:   zenity lub kdialog
+    - Windows: PowerShell
+    - Fallback: tkinter w subprocess
 
     Zwraca JSON:
     - { available: true, path: "/wybrana/ścieżka.pdf" }  — plik wybrany
     - { available: true, path: null }                    — użytkownik anulował
-    - { available: false, reason: "..." }                — działa tylko lokalnie
+    - { available: false, reason: "..." }                — tylko lokalnie
     """
     if _IS_CLOUD_RUN:
         return jsonify(
@@ -253,57 +256,109 @@ def pick_file():
             reason="Okno wyboru pliku działa tylko na lokalnym serwerze."
         )
 
-    # Skrypt Python uruchamiany w osobnym procesie (ma własny main thread)
-    picker_script = '''
-import sys, json
-try:
-    import tkinter as tk
-    from tkinter import filedialog
-    root = tk.Tk()
-    root.withdraw()
-    root.lift()
-    root.attributes("-topmost", True)
-    root.update()
-    path = filedialog.askopenfilename(
-        title="Wybierz dokument",
-        filetypes=[
-            ("Dokumenty", "*.pdf *.docx *.doc"),
-            ("PDF", "*.pdf"),
-            ("Word", "*.docx *.doc"),
-            ("Wszystkie pliki", "*.*"),
-        ],
-    )
-    root.destroy()
-    print(json.dumps({"path": path or None}))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-'''
+    import platform
+    system = platform.system()
 
     try:
-        result = subprocess.run(
-            [sys.executable, "-c", picker_script],
-            capture_output=True,
-            text=True,
-            timeout=120,  # 2 minuty na wybór pliku
-        )
+        path = None
 
-        if result.returncode != 0 or not result.stdout.strip():
-            error_msg = result.stderr.strip() or "Subprocess zakończył się bez wyniku"
-            logger.error("pick-file subprocess error: %s", error_msg)
-            return jsonify(available=False, reason=f"Błąd okna wyboru: {error_msg[:120]}")
+        if system == 'Darwin':
+            # macOS — AppleScript przez plik tymczasowy (unikamy escapowania w -e)
+            import tempfile, os as _os
+            script_content = (
+                'tell application "System Events"\n'
+                '  activate\n'
+                '  try\n'
+                '    set f to choose file with prompt "Wybierz dokument PDF lub Word"'
+                ' of type {"pdf", "docx", "doc"}\n'
+                '    return POSIX path of f\n'
+                '  on error\n'
+                '    return ""\n'
+                '  end try\n'
+                'end tell\n'
+            )
+            fd, script_path = tempfile.mkstemp(suffix='.applescript')
+            try:
+                with _os.fdopen(fd, 'w') as f:
+                    f.write(script_content)
+                r = subprocess.run(
+                    ['osascript', script_path],
+                    capture_output=True, text=True, timeout=120
+                )
+                path = r.stdout.strip() or None
+            finally:
+                _os.unlink(script_path)
 
-        data = json.loads(result.stdout.strip())
+        elif system == 'Linux':
+            # Linux — próbuj zenity (GNOME) lub kdialog (KDE)
+            for cmd in [
+                ['zenity', '--file-selection', '--title=Wybierz dokument',
+                 '--file-filter=Dokumenty (PDF, DOCX) | *.pdf *.docx *.doc'],
+                ['kdialog', '--getopenfilename', '.', '*.pdf *.docx *.doc'],
+            ]:
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                    if r.returncode == 0:
+                        path = r.stdout.strip() or None
+                        break
+                except FileNotFoundError:
+                    continue
+            else:
+                # Fallback: tkinter subprocess
+                path = _pick_via_tkinter()
 
-        if "error" in data:
-            return jsonify(available=False, reason=data["error"])
+        elif system == 'Windows':
+            # Windows — PowerShell OpenFileDialog
+            ps_script = (
+                'Add-Type -AssemblyName System.Windows.Forms;'
+                '$d = New-Object System.Windows.Forms.OpenFileDialog;'
+                '$d.Filter = "Dokumenty|*.pdf;*.docx;*.doc";'
+                '$d.Title = "Wybierz dokument";'
+                'if ($d.ShowDialog() -eq "OK") { $d.FileName }'
+            )
+            r = subprocess.run(
+                ['powershell', '-Command', ps_script],
+                capture_output=True, text=True, timeout=120
+            )
+            path = r.stdout.strip() or None
 
-        return jsonify(available=True, path=data.get("path"))
+        else:
+            path = _pick_via_tkinter()
+
+        return jsonify(available=True, path=path)
 
     except subprocess.TimeoutExpired:
-        return jsonify(available=True, path=None)  # Anulowane przez timeout
+        return jsonify(available=True, path=None)
     except Exception as e:
         logger.error("pick-file error: %s", e)
         return jsonify(available=False, reason=str(e))
+
+
+def _pick_via_tkinter():
+    """Fallback: tkinter file dialog w osobnym subprocess (własny main thread)."""
+    script = (
+        'import sys, json\n'
+        'try:\n'
+        '    import tkinter as tk\n'
+        '    from tkinter import filedialog\n'
+        '    root = tk.Tk(); root.withdraw()\n'
+        '    root.attributes("-topmost", True); root.update()\n'
+        '    p = filedialog.askopenfilename(\n'
+        '        title="Wybierz dokument",\n'
+        '        filetypes=[("Dokumenty","*.pdf *.docx *.doc"),("Wszystkie","*.*")]\n'
+        '    )\n'
+        '    root.destroy()\n'
+        '    print(json.dumps({"path": p or None}))\n'
+        'except Exception as e:\n'
+        '    print(json.dumps({"error": str(e)}))\n'
+    )
+    r = subprocess.run([sys.executable, '-c', script],
+                       capture_output=True, text=True, timeout=120)
+    if r.stdout.strip():
+        data = json.loads(r.stdout.strip())
+        return data.get('path')
+    return None
+
 
 
 # ===== ROUTES: PAGE DATA =====
