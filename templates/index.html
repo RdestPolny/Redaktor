@@ -40,20 +40,14 @@
             </div>
 
             <!-- OPCJA 2: Otwórz z dysku przez ścieżkę lokalną -->
-            <div class="open-path-zone">
+            <div class="open-path-zone" id="open-path-zone" onclick="browseFile()">
                 <div class="upload-icon">📂</div>
                 <h2>Otwórz z dysku</h2>
                 <p>Kliknij aby wybrać plik z eksploratora</p>
                 <p class="upload-formats">Bez limitu rozmiaru · działa tylko lokalnie</p>
-                <div class="path-input-row">
-                    <input type="text" id="path-input" class="path-input"
-                        placeholder="Kliknij 'Wybierz…' aby wskazać plik" readonly spellcheck="false">
-                    <button class="btn btn-secondary" id="btn-browse" onclick="browseFile()">
-                        🗂 Wybierz…
-                    </button>
-                    <button class="btn btn-primary" id="btn-open-path" onclick="openFromPath()" disabled>
-                        Otwórz
-                    </button>
+                <div class="path-preview-row" onclick="event.stopPropagation()">
+                    <input type="text" id="path-input" class="path-input" placeholder="(brak wybranego pliku)" readonly
+                        spellcheck="false">
                 </div>
             </div>
 

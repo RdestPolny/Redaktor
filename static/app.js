@@ -71,84 +71,76 @@ fileInput.addEventListener('change', () => {
     }
 });
 
-// Sprawdź dostępność natywnego dialogu przy starcie
-let _browseAvailable = !state.serverLimits.is_cloud_run; // optymistyczne założenie lokalnie
-
 document.addEventListener('DOMContentLoaded', () => {
-    // Sprawdź czy /pick-file jest dostępny
+    // Sprawdź czy /pick-file jest dostępny (bez blokowania UI — robimy to po cichu)
     fetch('/pick-file')
         .then(r => r.json())
         .then(data => {
-            _browseAvailable = data.available !== false;
-            if (!_browseAvailable) {
-                // Przełącz panel na ręczne wpisywanie ścieżki
-                const pathInput = document.getElementById('path-input');
-                const browseBtn = document.getElementById('btn-browse');
-                const openBtn = document.getElementById('btn-open-path');
-                if (pathInput) {
-                    pathInput.removeAttribute('readonly');
-                    pathInput.placeholder = '/Users/ty/Dokumenty/plik.pdf';
-                }
-                if (browseBtn) browseBtn.classList.add('hidden');
-                if (openBtn) {
-                    openBtn.disabled = false;
-                    openBtn.textContent = 'Otwórz';
-                }
+            if (data.available === false) {
+                // Cloud Run lub brak tkinter — przełącz na tryb ręcznego wpisywania
+                _enableManualPathMode(data.reason);
             }
         })
-        .catch(() => { _browseAvailable = false; });
+        .catch(() => { /* ignoruj — zakładamy że browse działa lokalnie */ });
+});
 
-    // Obsługa Enter w polu ścieżki (tryb ręczny)
+function _enableManualPathMode(reason) {
+    const zone = document.getElementById('open-path-zone');
     const pathInput = document.getElementById('path-input');
+    if (zone) {
+        zone.onclick = null;  // usuń click handler
+        zone.style.cursor = 'default';
+        zone.querySelector('p').textContent = reason || 'Wpisz ścieżkę lokalną do pliku';
+        zone.querySelector('h2').textContent = 'Otwórz ze ścieżki';
+        zone.querySelector('.upload-icon').textContent = '🗂️';
+    }
     if (pathInput) {
+        pathInput.removeAttribute('readonly');
+        pathInput.placeholder = '/Users/ty/Dokumenty/plik.pdf';
+        pathInput.style.cursor = 'text';
         pathInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') openFromPath();
         });
-        pathInput.addEventListener('input', () => {
-            const openBtn = document.getElementById('btn-open-path');
-            if (openBtn) openBtn.disabled = !pathInput.value.trim();
-        });
+        // Dodaj przycisk Otwórz
+        const row = document.querySelector('.path-preview-row');
+        if (row) {
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-primary';
+            btn.textContent = 'Otwórz';
+            btn.onclick = openFromPath;
+            row.appendChild(btn);
+        }
     }
-});
+}
 
 async function browseFile() {
-    const browseBtn = document.getElementById('btn-browse');
-    if (browseBtn) { browseBtn.disabled = true; browseBtn.textContent = '⏳ Wybieram…'; }
+    const zone = document.getElementById('open-path-zone');
+    if (zone) zone.classList.add('drag-over');  // wizualny feedback
 
     try {
         const resp = await fetch('/pick-file');
         const data = await resp.json();
 
-        if (!data.available) {
-            // Fallback — ukryj przycisk browse, pozwól wpisać ręcznie
-            showToast(data.reason || 'Wybór pliku niedostępny.', 'error');
-            const pathInput = document.getElementById('path-input');
-            if (pathInput) { pathInput.removeAttribute('readonly'); pathInput.placeholder = '/ścieżka/do/pliku.pdf'; pathInput.focus(); }
-            if (browseBtn) browseBtn.classList.add('hidden');
-            const openBtn = document.getElementById('btn-open-path');
-            if (openBtn) openBtn.disabled = false;
+        if (data.available === false) {
+            _enableManualPathMode(data.reason);
+            showToast('Kliknij w strefę i wpisz ścieżkę ręcznie.', 'error');
             return;
         }
 
         if (!data.path) {
-            // Użytkownik anulował dialog — nic nie rób
-            return;
+            return;  // Użytkownik anulował dialog — nic nie rób
         }
 
-        // Ustaw wybraną ścieżkę
+        // Ustaw wybraną ścieżkę i od razu otwórz plik
         const pathInput = document.getElementById('path-input');
         if (pathInput) pathInput.value = data.path;
 
-        const openBtn = document.getElementById('btn-open-path');
-        if (openBtn) openBtn.disabled = false;
-
-        // Automatycznie otwórz plik bez dodatkowego kliknięcia
         await openFromPath();
 
     } catch (err) {
         showToast('Błąd wyboru pliku: ' + err.message, 'error');
     } finally {
-        if (browseBtn) { browseBtn.disabled = false; browseBtn.textContent = '🗂 Wybierz…'; }
+        if (zone) zone.classList.remove('drag-over');
     }
 }
 

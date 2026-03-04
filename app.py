@@ -13,19 +13,9 @@ import tempfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# tkinter do natywnego okna wyboru pliku (stdlib, brak instalacji)
-# UWAGA: na headless serwerach (Cloud Run) tkinter może rzucać TclError lub ImportError
-try:
-    import tkinter as tk
-    from tkinter import filedialog as tk_filedialog
-    # Szybki test czy tkinter faktycznie działa (wymaga $DISPLAY na Linuksie)
-    _root_test = tk.Tk()
-    _root_test.destroy()
-    _TKINTER_AVAILABLE = True
-except Exception:
-    tk = None
-    tk_filedialog = None
-    _TKINTER_AVAILABLE = False
+import sys
+import subprocess
+
 
 from flask import (
     Flask, request, jsonify, render_template,
@@ -247,12 +237,15 @@ def open_path():
 
 @app.route('/pick-file')
 def pick_file():
-    """Otwiera natywne okno wyboru pliku po stronie serwera (tylko lokalnie).
+    """Otwiera natywne okno wyboru pliku — uruchamia subprocess z tkinter.
+
+    Subprocess ma własny main thread, co omija ograniczenie macOS/Linux
+    wymagające tkinter na głównym wątku procesu.
 
     Zwraca JSON:
-    - { available: true, path: "/wybrana/ścieżka.pdf" } — plik wybrany
-    - { available: true, path: null }                   — użytkownik anulował
-    - { available: false, reason: "..." }               — tkinter niedostępny (Cloud Run)
+    - { available: true, path: "/wybrana/ścieżka.pdf" }  — plik wybrany
+    - { available: true, path: null }                    — użytkownik anulował
+    - { available: false, reason: "..." }                — działa tylko lokalnie
     """
     if _IS_CLOUD_RUN:
         return jsonify(
@@ -260,37 +253,54 @@ def pick_file():
             reason="Okno wyboru pliku działa tylko na lokalnym serwerze."
         )
 
-    if not _TKINTER_AVAILABLE:
-        return jsonify(
-            available=False,
-            reason="tkinter niedostępny w tym środowisku Python."
-        )
+    # Skrypt Python uruchamiany w osobnym procesie (ma własny main thread)
+    picker_script = '''
+import sys, json
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()
+    root.lift()
+    root.attributes("-topmost", True)
+    root.update()
+    path = filedialog.askopenfilename(
+        title="Wybierz dokument",
+        filetypes=[
+            ("Dokumenty", "*.pdf *.docx *.doc"),
+            ("PDF", "*.pdf"),
+            ("Word", "*.docx *.doc"),
+            ("Wszystkie pliki", "*.*"),
+        ],
+    )
+    root.destroy()
+    print(json.dumps({"path": path or None}))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+'''
 
     try:
-        # tkinter wymaga głównego wątku na macOS — używamy osobnego miniwindow
-        root = tk.Tk()
-        root.withdraw()          # ukryj główne okno
-        root.lift()              # wysuń na wierzch
-        root.attributes("-topmost", True)  # zawsze na wierzchu
-        root.update()
-
-        path = tk_filedialog.askopenfilename(
-            parent=root,
-            title="Wybierz dokument",
-            filetypes=[
-                ("Dokumenty", "*.pdf *.docx *.doc"),
-                ("PDF", "*.pdf"),
-                ("Word", "*.docx *.doc"),
-                ("Wszystkie pliki", "*.*"),
-            ],
-        )
-        root.destroy()
-
-        return jsonify(
-            available=True,
-            path=path if path else None,
+        result = subprocess.run(
+            [sys.executable, "-c", picker_script],
+            capture_output=True,
+            text=True,
+            timeout=120,  # 2 minuty na wybór pliku
         )
 
+        if result.returncode != 0 or not result.stdout.strip():
+            error_msg = result.stderr.strip() or "Subprocess zakończył się bez wyniku"
+            logger.error("pick-file subprocess error: %s", error_msg)
+            return jsonify(available=False, reason=f"Błąd okna wyboru: {error_msg[:120]}")
+
+        data = json.loads(result.stdout.strip())
+
+        if "error" in data:
+            return jsonify(available=False, reason=data["error"])
+
+        return jsonify(available=True, path=data.get("path"))
+
+    except subprocess.TimeoutExpired:
+        return jsonify(available=True, path=None)  # Anulowane przez timeout
     except Exception as e:
         logger.error("pick-file error: %s", e)
         return jsonify(available=False, reason=str(e))
