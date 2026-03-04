@@ -95,8 +95,8 @@ class AIProcessor:
             "TWOJA ROLA — TYLKO formatowanie i kosmetyka:\n"
             "✅ WOLNO:\n"
             "  - Naprawiać akapity (łączyć urwane zdania, dzielić zbite bloki)\n"
-            "  - Dodawać nagłówki Markdown (## dla sekcji, ### dla podsekcji)\n"
-            "  - Formatować listy jako listy Markdown (- element)\n"
+            "  - Dodawać nagłówki HTML (<h2> dla sekcji, <h3> dla podsekcji)\n"
+            "  - Formatować listy jako listy HTML (<ul><li> element</li></ul>)\n"
             "  - Poprawiać oczywiste literówki\n"
             "  - Usuwać artefakty: numery stron, stopki, powtórzenia nagłówków\n"
             "  - Łączyć wyrazy przerwane łamaniem wiersza (np. 'transforma-\\ntorem' → 'transformatorem')\n\n"
@@ -105,7 +105,7 @@ class AIProcessor:
             "  - Dodawanie nowych informacji\n"
             "  - Usuwanie merytorycznej treści\n"
             "  - Zmiana kolejności myśli\n\n"
-            "Zwróć TYLKO poprawiony tekst w Markdown, bez żadnych komentarzy."
+            "Zwróć TYLKO poprawiony tekst w HTML (bez tagów <html>, <body> itp., sama treść semantyczna), bez żadnych komentarzy."
         )
 
         return self._call(system, raw_text)
@@ -132,12 +132,12 @@ class AIProcessor:
             "WYMAGANIA ARTYKUŁU:\n"
             "1. Tytuł SEO (max 60 znaków) — zawiera główne słowo kluczowe, chwytliwy\n"
             "2. Meta description (max 160 znaków) — zachęca do kliknięcia\n"
-            "3. Artykuł w Markdown:\n"
+            "3. Artykuł w HTML:\n"
             "   - Lead (pierwszy akapit) — odpowiada na: co, dla kogo, dlaczego warto\n"
-            "   - Śródtytuły H2/H3 — każdy odpowiada na pytanie lub zawiera frazę kluczową\n"
+            "   - Śródtytuły <h2>/<h3> — każdy odpowiada na pytanie lub zawiera frazę kluczową\n"
             "   - Naturalnie wplecione słowa kluczowe (nie upychaj na siłę)\n"
-            "   - Listy punktowane gdzie sens\n"
-            "   - Pogrubienia dla kluczowych terminów\n"
+            "   - Listy punktowane (<ul>/<li>) gdzie sens\n"
+            "   - Możesz używać <strong> dla kluczowych terminów\n"
             "   - Akapity po 2-4 zdania\n\n"
             "ZASADY:\n"
             "- Bazuj WYŁĄCZNIE na faktach z materiału źródłowego\n"
@@ -148,7 +148,7 @@ class AIProcessor:
             "TITLE: [tytuł]\n"
             "META: [meta description]\n"
             "ARTICLE:\n"
-            "[artykuł w Markdown]"
+            "[artykuł w HTML]"
         )
 
         user_content = (

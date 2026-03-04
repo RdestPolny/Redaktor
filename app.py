@@ -145,28 +145,6 @@ with st.sidebar:
                 st.session_state.seo_result = None
                 st.rerun()
 
-    # Nawigacja (tylko gdy dokument załadowany)
-    if st.session_state.doc:
-        st.divider()
-        total = st.session_state.total_pages
-        cur = st.session_state.current_page
-
-        st.caption(f"Strona **{cur}** / **{total}**")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("⬅️", use_container_width=True, disabled=cur <= 1):
-                st.session_state.current_page -= 1
-                st.rerun()
-        with c2:
-            if st.button("➡️", use_container_width=True, disabled=cur >= total):
-                st.session_state.current_page += 1
-                st.rerun()
-
-        pg = st.number_input("Idź do strony:", 1, total, cur, label_visibility="collapsed")
-        if pg != cur:
-            st.session_state.current_page = pg
-            st.rerun()
-
         # Podsumowanie
         st.divider()
         done = len(st.session_state.transcriptions)
@@ -240,7 +218,30 @@ total_pages: int = st.session_state.total_pages
 # GŁÓWNY INTERFEJS — SIDE BY SIDE
 # ══════════════════════════════════════════════════════════════
 
-st.subheader(f"Strona {current_page} z {total_pages}")
+# ══════════════════════════════════════════════════════════════
+# GŁÓWNY INTERFEJS — NAWIGACJA
+# ══════════════════════════════════════════════════════════════
+
+nav1, nav2, nav3 = st.columns([2, 1, 2])
+with nav1:
+    st.subheader(f"Strona {current_page} z {total_pages}")
+with nav2:
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        if st.button("⬅️", use_container_width=True, disabled=current_page <= 1, key="nav_prev"):
+            st.session_state.current_page -= 1
+            st.rerun()
+    with cc2:
+        if st.button("➡️", use_container_width=True, disabled=current_page >= total_pages, key="nav_next"):
+            st.session_state.current_page += 1
+            st.rerun()
+with nav3:
+    pg = st.number_input("Idź do strony:", 1, total_pages, current_page, key="nav_input", label_visibility="collapsed")
+    if pg != current_page:
+        st.session_state.current_page = pg
+        st.rerun()
+
+st.divider()
 
 col_orig, col_redacted = st.columns(2, gap="large")
 
@@ -256,24 +257,39 @@ with col_redacted:
     st.markdown("### 🤖 Redakcja AI")
     
     if current_page in st.session_state.transcriptions:
-        edited = st.text_area(
-            "Edytowany tekst:",
-            value=st.session_state.transcriptions[current_page],
-            height=600,
+        edited = st.session_state.transcriptions[current_page]
+        
+        # Podgląd HTML
+        with st.expander("👁️ Podgląd HTML", expanded=True):
+            st.markdown(f'<div style="background: white; color: black; padding: 20px; border-radius: 8px;">{edited}</div>', unsafe_allow_html=True)
+        
+        # Edycja Raw HTML
+        edited_new = st.text_area(
+            "Kod HTML:",
+            value=edited,
+            height=400,
             key=f"edit_{current_page}",
         )
-        st.session_state.transcriptions[current_page] = edited
+        st.session_state.transcriptions[current_page] = edited_new
         
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
             st.download_button(
+                "⬇️ Pobierz HTML",
+                data=edited_new.encode("utf-8"),
+                file_name=f"{Path(doc.filename).stem}_str{current_page}.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        with c2:
+            st.download_button(
                 "⬇️ Pobierz TXT",
-                data=edited.encode("utf-8"),
+                data=edited_new.encode("utf-8"),
                 file_name=f"{Path(doc.filename).stem}_str{current_page}.txt",
                 mime="text/plain",
                 use_container_width=True,
             )
-        with c2:
+        with c3:
             if st.button("🔄 Cofnij", use_container_width=True):
                 del st.session_state.transcriptions[current_page]
                 st.rerun()
@@ -328,15 +344,15 @@ with tab_batch:
     done_count = len(st.session_state.transcriptions)
     if done_count:
         st.divider()
-        _all = "\n\n".join(
-            f"{'='*60}\nSTRONA {pg}\n{'='*60}\n\n{txt}"
-            for pg, txt in sorted(st.session_state.transcriptions.items())
-        )
+        _all = "<html><head><meta charset='utf-8'><style>body{font-family:sans-serif;line-height:1.6;max-width:800px;margin:40px auto;padding:20px;} .page-divider{border-top:2px solid #eee;margin:40px 0;padding-top:20px;color:#888;font-size:0.8em;text-transform:uppercase;}</style></head><body>"
+        for pg, txt in sorted(st.session_state.transcriptions.items()):
+            _all += f"<div class='page-divider'>Strona {pg}</div>\n{txt}\n"
+        _all += "</body></html>"
         st.download_button(
-            f"⬇️ Pobierz wszystkie zredagowane strony ({done_count})",
+            f"⬇️ Pobierz wszystkie zredagowane strony ({done_count}) - Kod HTML",
             data=_all.encode("utf-8"),
-            file_name=f"{Path(doc.filename).stem}_redakcja_calosc.txt",
-            mime="text/plain",
+            file_name=f"{Path(doc.filename).stem}_redakcja_calosc.html",
+            mime="text/html",
             use_container_width=True,
         )
 
@@ -426,16 +442,21 @@ with tab_seo:
                 st.caption(f"Meta description: {mc} znaków {'✅' if mc <= 160 else '⚠️'}")
 
         with col_dl:
-            full = (f"# {r.get('title', '')}\n\n"
-                    f"> {r.get('meta_description', '')}\n\n"
-                    f"{r.get('article', '')}")
-            st.download_button("⬇️ Markdown", full.encode(), "artykul.md", "text/markdown",
+            full_html = (f"<h1>{r.get('title', '')}</h1>\n\n"
+                        f"<!-- Meta: {r.get('meta_description', '')} -->\n\n"
+                        f"{r.get('article', '')}")
+            st.download_button("⬇️ HTML", full_html.encode(), "artykul.html", "text/html",
                                use_container_width=True)
-            st.download_button("⬇️ TXT", full.encode(), "artykul.txt", "text/plain",
+            st.download_button("⬇️ TXT", full_html.encode(), "artykul.txt", "text/plain",
                                use_container_width=True)
 
         st.markdown("---")
-        st.markdown(r.get("article", ""), unsafe_allow_html=True)
+        # Rendered HTML
+        st.markdown(f'<div style="background: white; color: black; padding: 20px; border-radius: 8px;">{r.get("article", "")}</div>', unsafe_allow_html=True)
+        
+        # Raw HTML code area for easy copying
+        with st.expander("📄 Zobacz kod HTML", expanded=False):
+            st.code(r.get("article", ""), language="html")
 
         if st.button("🗑️ Wyczyść wynik"):
             st.session_state.seo_result = None
