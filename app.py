@@ -68,6 +68,8 @@ def _init():
         "seo_research": None,      # Etap 2: wynik researchu Perplexity
         "seo_source_texts": None,  # teksty stron użyte w pipeline
         "seo_page_range": "",      # zakres stron np. '10-15'
+        "active_mode": "Lekka Redakcja (Korekta + HTML)",
+        "redaction_scope": "Bieżąca strona",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -78,6 +80,26 @@ def _init():
 _init()
 
 # ===== HELPERS =====
+
+def _parse_page_range(text: str, total: int):
+    """Parsuje '10-15' → (10, 15) lub None jeśli błąd."""
+    import re
+    text = text.strip()
+    if not text:
+        return None
+    # Akceptuj formaty: '10-15', '10–15', '10 - 15'
+    m = re.match(r'^(\d+)\s*[-–]\s*(\d+)$', text)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if 1 <= a <= b <= total:
+            return a, b
+    # Pojedyncza strona
+    m2 = re.match(r'^(\d+)$', text)
+    if m2:
+        a = int(m2.group(1))
+        if 1 <= a <= total:
+            return a, a
+    return None
 
 def _load_document(uploaded_file) -> "DocumentHandler | None":
     try:
@@ -123,7 +145,30 @@ with col_upload:
     )
 
 with col_settings:
-    with st.expander("⚙️ Ustawienia i Modele", expanded=False):
+    st.markdown("##### 🛠️ Konfiguracja Pracy")
+    
+    # Wybór Trybu Głównego
+    mode = st.radio(
+        "Wybierz tryb pracy:",
+        ["Lekka Redakcja (Korekta + HTML)", "Generator Artykułu SEO (3 etapy)"],
+        horizontal=True,
+        help="Wybierz, co chcesz zrobić z tekstem."
+    )
+    st.session_state.active_mode = mode
+
+    # Wybór Zakresu
+    if mode == "Lekka Redakcja (Korekta + HTML)":
+        scope = st.selectbox(
+            "Zakres przetwarzania:",
+            ["Bieżąca strona", "Zakres stron (np. 1-5)", "Wszystkie brakujące strony"],
+            index=0
+        )
+        st.session_state.redaction_scope = scope
+    else:
+        # Artykuł SEO — tu zakres jest wpisywany tekstowo (np. 10-15)
+        st.info("💡 Tryb SEO wymaga podania zakresu stron źródłowych poniżej.")
+
+    with st.expander("⚙️ Zaawansowane (Modele i Klucze)", expanded=False):
         st.markdown(f"**Redakcja:** `{MODEL_REDAKCJA}`")
         st.markdown(f"**Artykuł:** `{MODEL_ARTYKUL}`")
         st.markdown(f"**Research:** `{MODEL_SONAR}`")
@@ -138,7 +183,7 @@ if uploaded is not None:
     file_id = f"{uploaded.name}_{uploaded.size}"
     if file_id != st.session_state.file_id:
         with st.spinner("Wczytywanie…"):
-            doc = _load_document(uploaded)
+            doc = _init_doc(uploaded)
         if doc:
             st.session_state.doc = doc
             st.session_state.filename = uploaded.name
@@ -149,34 +194,82 @@ if uploaded is not None:
             st.session_state.seo_result = None
             st.rerun()
 
+def _init_doc(uploaded_file):
+    try:
+        return DocumentHandler(uploaded_file, uploaded_file.name)
+    except Exception as e:
+        st.error(f"Błąd wczytywania: {e}")
+        return None
+
 if not st.session_state.doc:
     st.info("⬆️ Wgraj dokument, aby rozpocząć pracę.")
     st.stop()
 
-# Jeśli dokument jest wgrany, pokaż narzędzia globalne:
+# --- Akcje po wgraniu ---
 with col_settings:
     done = len(st.session_state.transcriptions)
     st.caption(f"✅ Zredagowane strony: **{done}** / {st.session_state.total_pages}")
     
-    if st.button("🚀 Redaguj wszystko (Równolegle)", type="primary", use_container_width=True, disabled=st.session_state.processing):
-        pages_to_do = [p for p in range(1, st.session_state.total_pages + 1) if p not in st.session_state.transcriptions]
-        if pages_to_do:
-            st.session_state.processing = True
-            progress_bar = st.progress(0, text="Uruchamiam przetwarzanie równoległe...")
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
-                done_count = 0
-                for future in concurrent.futures.as_completed(future_to_page):
-                    page_num, result = future.result()
-                    if result is not None:
-                        st.session_state.transcriptions[page_num] = result
-                    done_count += 1
-                    progress_bar.progress(done_count / len(pages_to_do), text=f"Postęp: {done_count}/{len(pages_to_do)} stron")
-            
-            st.session_state.processing = False
-            st.success("Przetwarzanie zakończone!")
-            st.rerun()
+    # Obsługa zakresu "Wszystkie brakujące" w trybie Redakcji
+    if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)" and st.session_state.redaction_scope == "Wszystkie brakujące strony":
+        if st.button("🚀 Uruchom Przetwarzanie Zbiorcze", type="primary", use_container_width=True, disabled=st.session_state.processing):
+            pages_to_do = [p for p in range(1, st.session_state.total_pages + 1) if p not in st.session_state.transcriptions]
+            if not pages_to_do:
+                st.info("Wszystkie strony zostały już zredagowane.")
+            else:
+                st.session_state.processing = True
+                progress_bar = st.progress(0, text="Uruchamiam przetwarzanie równoległe (max 5 wątków)...")
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
+                    done_count = 0
+                    errors = []
+                    for future in concurrent.futures.as_completed(future_to_page):
+                        p_num = future_to_page[future]
+                        try:
+                            page_num, result = future.result()
+                            if result:
+                                st.session_state.transcriptions[page_num] = result
+                            else:
+                                errors.append(f"Strona {page_num}: Brak wyniku (pusty tekst?)")
+                        except Exception as e:
+                            errors.append(f"Strona {p_num}: {e}")
+                        
+                        done_count += 1
+                        progress_bar.progress(done_count / len(pages_to_do), text=f"Postęp: {done_count}/{len(pages_to_do)} stron")
+                
+                st.session_state.processing = False
+                if errors:
+                    st.warning(f"Zakończono z błędami ({len(errors)}):\n" + "\n".join(errors[:5]))
+                else:
+                    st.success("Wszystkie strony przetworzone pomyślnie!")
+                st.rerun()
+
+    # Obsługa zakresu "Zakres stron" w trybie Redakcji
+    elif st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)" and st.session_state.redaction_scope == "Zakres stron (np. 1-5)":
+        r_text = st.text_input("Podaj zakres (np. 5-10):", placeholder=f"1-{st.session_state.total_pages}")
+        if st.button("🚀 Redaguj wybrany zakres", type="primary", use_container_width=True):
+    # Usunięto from app import _parse_page_range (jest teraz na górze)
+            parsed = _parse_page_range(r_text, st.session_state.total_pages)
+            if parsed:
+                s_from, s_to = parsed
+                pages_to_do = [p for p in range(s_from, s_to + 1) if p not in st.session_state.transcriptions]
+                if not pages_to_do:
+                    st.info("Strony w tym zakresie są już zredagowane.")
+                else:
+                    st.session_state.processing = True
+                    with st.status(f"Przetwarzanie stron {s_from}-{s_to}...") as status:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                            for p in pages_to_do:
+                                _, res = _redact_page(p)
+                                if res:
+                                    st.session_state.transcriptions[p] = res
+                                    st.write(f"✅ Strona {p} gotowa")
+                        status.update(label="Zakres przetworzony!", state="complete")
+                    st.session_state.processing = False
+                    st.rerun()
+            else:
+                st.error("Niepoprawny format zakresu.")
 
 st.divider()
 
@@ -186,103 +279,103 @@ doc: DocumentHandler = st.session_state.doc
 current_page: int = st.session_state.current_page
 total_pages: int = st.session_state.total_pages
 
-# ══════════════════════════════════════════════════════════════
-# GŁÓWNY INTERFEJS — SIDE BY SIDE
-# ══════════════════════════════════════════════════════════════
-
-# ══════════════════════════════════════════════════════════════
-# GŁÓWNY INTERFEJS — NAWIGACJA
-# ══════════════════════════════════════════════════════════════
-
-nav1, nav2, nav3 = st.columns([2, 1, 2])
-with nav1:
-    st.subheader(f"Strona {current_page} z {total_pages}")
-with nav2:
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        if st.button("⬅️", use_container_width=True, disabled=current_page <= 1, key="nav_prev"):
-            st.session_state.current_page -= 1
-            st.rerun()
-    with cc2:
-        if st.button("➡️", use_container_width=True, disabled=current_page >= total_pages, key="nav_next"):
-            st.session_state.current_page += 1
-            st.rerun()
-with nav3:
-    pg = st.number_input("Idź do strony:", 1, total_pages, current_page, key="nav_input", label_visibility="collapsed")
-    if pg != current_page:
-        st.session_state.current_page = pg
-        st.rerun()
-
-st.divider()
-
-col_orig, col_redacted = st.columns(2, gap="large")
-
-with col_orig:
-    st.markdown("### 📄 Oryginał (PDF)")
-    img = doc.render_page_as_image(current_page - 1)
-    if img:
-        st.image(img, use_container_width=True)
-    else:
-        st.info("Podgląd niedostępny.")
-
-with col_redacted:
-    st.markdown("### 🤖 Redakcja AI")
-    
-    if current_page in st.session_state.transcriptions:
-        edited = st.session_state.transcriptions[current_page]
-        
-        # Podgląd HTML
-        with st.expander("👁️ Podgląd HTML", expanded=True):
-            st.markdown(f'<div style="background: white; color: black; padding: 20px; border-radius: 8px; max-height: 600px; overflow-y: auto;">{edited}</div>', unsafe_allow_html=True)
-        
-        # Edycja Raw HTML
-        edited_new = st.text_area(
-            "Kod HTML:",
-            value=edited,
-            height=400,
-            key=f"edit_{current_page}",
-        )
-        st.session_state.transcriptions[current_page] = edited_new
-        
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.download_button(
-                "⬇️ Pobierz HTML",
-                data=edited_new.encode("utf-8"),
-                file_name=f"{Path(doc.filename).stem}_str{current_page}.html",
-                mime="text/html",
-                use_container_width=True,
-            )
-        with c2:
-            st.download_button(
-                "⬇️ Pobierz TXT",
-                data=edited_new.encode("utf-8"),
-                file_name=f"{Path(doc.filename).stem}_str{current_page}.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-        with c3:
-            if st.button("🔄 Cofnij", use_container_width=True):
-                del st.session_state.transcriptions[current_page]
+# Warunkowe wyświetlanie w zależności od trybu
+if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)":
+    # ══════════════════════════════════════════════════════════════
+    # INTERFEJS REDAKCJI
+    # ══════════════════════════════════════════════════════════════
+    nav1, nav2, nav3 = st.columns([2, 1, 2])
+    with nav1:
+        st.subheader(f"Strona {current_page} z {total_pages}")
+    with nav2:
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            if st.button("⬅️", use_container_width=True, disabled=current_page <= 1, key="nav_prev"):
+                st.session_state.current_page -= 1
                 st.rerun()
-    else:
-        pc = doc.extract_page_content(current_page - 1)
-        if not pc.text.strip():
-            st.warning("Brak tekstu na tej stronie.")
+        with cc2:
+            if st.button("➡️", use_container_width=True, disabled=current_page >= total_pages, key="nav_next"):
+                st.session_state.current_page += 1
+                st.rerun()
+    with nav3:
+        pg = st.number_input("Idź do strony:", 1, total_pages, current_page, key="nav_input", label_visibility="collapsed")
+        if pg != current_page:
+            st.session_state.current_page = pg
+            st.rerun()
+
+    st.divider()
+
+    col_orig, col_redacted = st.columns(2, gap="large")
+
+    with col_orig:
+        st.markdown("### 📄 Oryginał (PDF)")
+        img = doc.render_page_as_image(current_page - 1)
+        if img:
+            st.image(img, use_container_width=True)
         else:
-            st.text_area("Surowy tekst:", value=pc.text, height=400, disabled=True)
-            if st.button("🤖 Redaguj tę stronę", type="primary", use_container_width=True):
-                with st.spinner("Przetwarzanie..."):
-                    _, result = _redact_page(current_page)
-                    if result:
-                        st.session_state.transcriptions[current_page] = result
-                        st.rerun()
+            st.info("Podgląd niedostępny.")
+
+    with col_redacted:
+        st.markdown("### 🤖 Redakcja AI")
+        
+        if current_page in st.session_state.transcriptions:
+            edited = st.session_state.transcriptions[current_page]
+            
+            # Podgląd HTML
+            with st.expander("👁️ Podgląd HTML", expanded=True):
+                st.markdown(f'<div style="background: white; color: black; padding: 20px; border-radius: 8px; max-height: 600px; overflow-y: auto;">{edited}</div>', unsafe_allow_html=True)
+            
+            # Edycja Raw HTML
+            edited_new = st.text_area(
+                "Kod HTML:",
+                value=edited,
+                height=400,
+                key=f"edit_{current_page}",
+            )
+            st.session_state.transcriptions[current_page] = edited_new
+            
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.download_button(
+                    "⬇️ Pobierz HTML",
+                    data=edited_new.encode("utf-8"),
+                    file_name=f"{Path(doc.filename).stem}_str{current_page}.html",
+                    mime="text/html",
+                    use_container_width=True,
+                )
+            with c2:
+                st.download_button(
+                    "⬇️ Pobierz TXT",
+                    data=edited_new.encode("utf-8"),
+                    file_name=f"{Path(doc.filename).stem}_str{current_page}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            with c3:
+                if st.button("🔄 Cofnij", use_container_width=True):
+                    del st.session_state.transcriptions[current_page]
+                    st.rerun()
+        else:
+            pc = doc.extract_page_content(current_page - 1)
+            if not pc.text.strip():
+                st.warning("Brak tekstu na tej stronie.")
+            else:
+                st.text_area("Surowy tekst:", value=pc.text, height=400, disabled=True)
+                if st.button("🤖 Redaguj tę stronę", type="primary", use_container_width=True):
+                    with st.spinner("Przetwarzanie..."):
+                        _, result = _redact_page(current_page)
+                        if result:
+                            st.session_state.transcriptions[current_page] = result
+                            st.rerun()
+else:
+    # Tryb SEO — informacja
+    st.success(f"📌 Aktywny tryb: **Generator Artykułu SEO**. Przewiń do sekcji poniżej, aby zarządzać pipeline'em.")
 
 st.divider()
 
 # TABS for other tools
 tab_seo, tab_grafiki, tab_batch = st.tabs([
-    "🔍 Artykuł SEO",
+    "🔍 Artykuł SEO" + (" (AKTYWNY)" if st.session_state.active_mode != "Lekka Redakcja (Korekta + HTML)" else ""),
     "🖼️ Grafiki",
     "📋 Narzędzia zbiorcze"
 ])
@@ -350,25 +443,6 @@ with tab_seo:
     )
 
     # ── INPUT: zakres stron ──────────────────────────────────────
-    def _parse_page_range(text: str, total: int):
-        """Parsuje '10-15' → (10, 15) lub None jeśli błąd."""
-        text = text.strip()
-        if not text:
-            return None
-        # Akceptuj formaty: '10-15', '10–15', '10 - 15'
-        m = re.match(r'^(\d+)\s*[-–]\s*(\d+)$', text)
-        if m:
-            a, b = int(m.group(1)), int(m.group(2))
-            if 1 <= a <= b <= total:
-                return a, b
-        # Pojedyncza strona
-        m2 = re.match(r'^(\d+)$', text)
-        if m2:
-            a = int(m2.group(1))
-            if 1 <= a <= total:
-                return a, a
-        return None
-
     import re as _re_seo  # noqa: F811 (lokalnie, re już zaimportowane wyżej)
 
     col_input, col_hint = st.columns([1, 2], gap="large")
