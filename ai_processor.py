@@ -130,6 +130,43 @@ class AIProcessor:
 
         return self._call(system, raw_text)
 
+    def edit_page_from_image(self, image_bytes: bytes) -> str:
+        """Redakcja tekstu bezpośrednio ze zrzutu ekranu strony (OCR + formatowanie HTML)."""
+        if not image_bytes:
+            return ""
+
+        system = (
+            "Jesteś redaktorem technicznym i zaawansowanym systemem OCR.\n\n"
+            "Odczytaj CAŁY tekst z przesłanego obrazu strony dokumentu i sformatuj go jako czysty kod HTML.\n"
+            "ZASADY:\n"
+            "1. Zamień nagłówki na tagi <h2>, <h3>.\n"
+            "2. Zamień ciągłe bloki tekstu na akapity <p>.\n"
+            "3. Formatuj listy używając <ul>, <ol> i <li>.\n"
+            "4. Jeśli na stronie są tabele, zrekonstruuj je używając znaczników <table>, <tr>, <th>, <td>.\n"
+            "5. Popraw ewidentne literówki wynikające z błędów skanowania i złącz wyrazy przerwane na końcach linii.\n"
+            "6. Ignoruj numery stron, stopki i powtarzające się nagłówki dokumentu.\n\n"
+            "Zwróć TYLKO sformatowany kod HTML, bez tagów <html> czy <body>, bez bloków markdown (```html) i komentarzy."
+        )
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type='image/png'),
+                    "Odczytaj tekst z tej strony i sformatuj go w HTML według instrukcji."
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=system,
+                ),
+            )
+            raw = response.text or ""
+            raw = re.sub(r"^```(?:html)?\s*", "", raw.strip())
+            raw = re.sub(r"\s*```$", "", raw)
+            return raw
+        except Exception as e:
+            logger.error("Błąd Gemini API (OCR): %s", e)
+            raise RuntimeError(f"Błąd AI: {e}") from e
+
     # ================================================================
     # TRYB 2: PIPELINE SEO (3 etapy)
     # ================================================================

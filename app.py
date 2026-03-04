@@ -401,6 +401,29 @@ if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)":
         else:
             st.info("Podgląd niedostępny.")
 
+        if doc.file_type == "pdf":
+            with st.expander("🖼️ Grafiki na tej stronie", expanded=False):
+                images = doc.extract_page_images(current_page - 1)
+                if not images:
+                    st.info("Brak grafik na tej stronie (lub są za małe — min. 80×80 px).")
+                else:
+                    st.success(f"Znaleziono **{len(images)}** grafik")
+                    cols = st.columns(min(3, len(images)), gap="medium")
+                    for i, img_data in enumerate(images):
+                        with cols[i % 3]:
+                            ext = img_data.get("ext", "png")
+                            st.image(img_data["bytes"],
+                                     caption=f"Grafika {i+1} · {img_data['width']}×{img_data['height']} px",
+                                     use_container_width=True)
+                            st.download_button(
+                                "⬇️ Pobierz",
+                                data=img_data["bytes"],
+                                file_name=f"grafika_str{current_page}_{i+1}.{ext}",
+                                mime=f"image/{ext}",
+                                key=f"dl_{current_page}_{i}",
+                                use_container_width=True,
+                            )
+
     with col_redacted:
         st.markdown("### 🤖 Redakcja AI")
         
@@ -420,10 +443,10 @@ if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)":
             )
             st.session_state.transcriptions[current_page] = edited_new
             
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             with c1:
                 st.download_button(
-                    "⬇️ Pobierz HTML",
+                    "⬇️ HTML",
                     data=edited_new.encode("utf-8"),
                     file_name=f"{Path(doc.filename).stem}_str{current_page}.html",
                     mime="text/html",
@@ -431,14 +454,26 @@ if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)":
                 )
             with c2:
                 st.download_button(
-                    "⬇️ Pobierz TXT",
+                    "⬇️ TXT",
                     data=edited_new.encode("utf-8"),
                     file_name=f"{Path(doc.filename).stem}_str{current_page}.txt",
                     mime="text/plain",
                     use_container_width=True,
                 )
             with c3:
-                if st.button("🔄 Cofnij", use_container_width=True):
+                if st.button("🖼️ Popraw", use_container_width=True, help="AI odczyta tekst z obrazu tej strony (przydatne przy tabelach)"):
+                    with st.spinner("Odczytywanie z obrazu (OCR)..."):
+                        img_bytes = doc.render_page_as_image(current_page - 1)
+                        if img_bytes:
+                            ai = AIProcessor.redakcja()
+                            result = ai.edit_page_from_image(img_bytes)
+                            if result:
+                                st.session_state.transcriptions[current_page] = result
+                                st.rerun()
+                        else:
+                            st.error("Nie udało się pobrać obrazu strony.")
+            with c4:
+                if st.button("🗑️ Usuń", use_container_width=True):
                     del st.session_state.transcriptions[current_page]
                     st.rerun()
         else:
@@ -447,12 +482,26 @@ if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)":
                 st.warning("Brak tekstu na tej stronie.")
             else:
                 st.text_area("Surowy tekst:", value=pc.text, height=400, disabled=True)
-                if st.button("🤖 Redaguj tę stronę", type="primary", use_container_width=True):
-                    with st.spinner("Przetwarzanie..."):
-                        _, result = _redact_page(current_page)
-                        if result:
-                            st.session_state.transcriptions[current_page] = result
-                            st.rerun()
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if st.button("🤖 Redaguj z tekstu", type="primary", use_container_width=True):
+                        with st.spinner("Przetwarzanie..."):
+                            _, result = _redact_page(current_page)
+                            if result:
+                                st.session_state.transcriptions[current_page] = result
+                                st.rerun()
+                with bc2:
+                    if st.button("🖼️ Redaguj z obrazu", use_container_width=True, help="AI odczyta tekst z obrazu (przydatne przy skomplikowanym formatowaniu)"):
+                        with st.spinner("Odczytywanie z obrazu (OCR)..."):
+                            img_bytes = doc.render_page_as_image(current_page - 1)
+                            if img_bytes:
+                                ai = AIProcessor.redakcja()
+                                result = ai.edit_page_from_image(img_bytes)
+                                if result:
+                                    st.session_state.transcriptions[current_page] = result
+                                    st.rerun()
+                            else:
+                                st.error("Nie udało się pobrać obrazu.")
 else:
     # Tryb SEO — informacja
     st.success(f"📌 Aktywny tryb: **Generator Artykułu SEO**. Przewiń do sekcji poniżej, aby zarządzać pipeline'em.")
@@ -460,9 +509,8 @@ else:
 st.divider()
 
 # TABS for other tools
-tab_seo, tab_grafiki = st.tabs([
+tab_seo, = st.tabs([
     "🔍 Artykuł SEO" + (" (AKTYWNY)" if st.session_state.active_mode != "Lekka Redakcja (Korekta + HTML)" else ""),
-    "🖼️ Grafiki",
 ])
 
 # Usuwam Tab Batch całkowicie (zakładka Narzędzia zbiorcze)
@@ -648,41 +696,3 @@ with tab_seo:
 
         with st.expander("📄 Kod HTML (do skopiowania)", expanded=False):
             st.code(r.get("article", ""), language="html")
-
-# ══════════════════════════════════════════════════════════════
-# TAB 5 — GRAFIKI
-# ══════════════════════════════════════════════════════════════
-
-with tab_grafiki:
-    st.subheader(f"🖼️ Grafiki ze strony {current_page}")
-    st.caption("Nawiguj stronami w panelu bocznym aby zobaczyć grafiki z innych stron.")
-
-    if doc.file_type != "pdf":
-        st.info("Ekstrakcja grafik dostępna tylko dla plików PDF.")
-    else:
-        images = doc.extract_page_images(current_page - 1)
-        if not images:
-            st.info("Brak grafik na tej stronie (lub są za małe — min. 80×80 px).")
-        else:
-            st.success(f"Znaleziono **{len(images)}** grafik")
-            cols = st.columns(min(3, len(images)), gap="medium")
-            for i, img in enumerate(images):
-                with cols[i % 3]:
-                    ext = img.get("ext", "png")
-                    st.image(img["bytes"],
-                             caption=f"Grafika {i+1} · {img['width']}×{img['height']} px",
-                             use_container_width=True)
-                    st.download_button(
-                        "⬇️ Pobierz",
-                        data=img["bytes"],
-                        file_name=f"grafika_str{current_page}_{i+1}.{ext}",
-                        mime=f"image/{ext}",
-                        key=f"dl_{current_page}_{i}",
-                        use_container_width=True,
-                    )
-
-        # Miniatura strony
-        with st.expander("📄 Podgląd strony", expanded=False):
-            img_bytes = doc.render_page_as_image(current_page - 1)
-            if img_bytes:
-                st.image(img_bytes, use_container_width=True)
