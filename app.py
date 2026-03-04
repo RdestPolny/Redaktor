@@ -89,6 +89,8 @@ def _init():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+    if "use_perplexity" not in st.session_state:
+        st.session_state.use_perplexity = True
 
 _init()
 
@@ -136,6 +138,18 @@ with st.sidebar:
         help="PDF, DOCX, DOC. Max 500 MB.",
     )
 
+    st.divider()
+    with st.expander("⚙️ Ustawienia i Modele", expanded=False):
+        st.markdown(f"**Redakcja:** `{MODEL_REDAKCJA}`")
+        st.markdown(f"**Artykuł:** `{MODEL_ARTYKUL}`")
+        st.markdown(f"**Research:** `{MODEL_SONAR}`")
+        st.divider()
+        st.session_state.use_perplexity = st.toggle(
+            "Używaj Perplexity Research",
+            value=st.session_state.use_perplexity,
+            help="Wyłączenie spowoduje pominięcie Etapu 2 (researchu merytorycznego) w pipeline SEO."
+        )
+
     if uploaded is not None:
         file_id = f"{uploaded.name}_{uploaded.size}"
         if file_id != st.session_state.file_id:
@@ -152,20 +166,13 @@ with st.sidebar:
                 st.rerun()
 
         # Podsumowanie
-        st.divider()
         done = len(st.session_state.transcriptions)
         if done:
-            st.caption(f"✅ Zredagowane strony: **{done}**")
+            st.caption(f"✅ Zredagowane strony: **{done}** / {st.session_state.total_pages}")
 
-        # Info o modelach
-        st.markdown(
-            f"**Redakcja:** `{MODEL_REDAKCJA}`\n\n"
-            f"**Artykuł:** `{MODEL_ARTYKUL}`"
-        )
-        
         st.divider()
         if st.button("🚀 Redaguj wszystko (Równolegle)", type="primary", use_container_width=True, disabled=st.session_state.processing):
-            pages_to_do = [p for p in range(1, total + 1) if p not in st.session_state.transcriptions]
+            pages_to_do = [p for p in range(1, st.session_state.total_pages + 1) if p not in st.session_state.transcriptions]
             if pages_to_do:
                 st.session_state.processing = True
                 progress_bar = st.progress(0, text="Uruchamiam przetwarzanie równoległe...")
@@ -495,6 +502,10 @@ with tab_seo:
 
     # ── ETAP 2: PERPLEXITY SONAR RESEARCH ───────────────────────
     if run_step2 and st.session_state.seo_analysis:
+        if not st.session_state.use_perplexity:
+            st.session_state.seo_research = "Research Perplexity został wyłączony w ustawieniach. Artykuł zostanie napisany wyłącznie na podstawie materiałów źródłowych."
+            st.rerun()
+            
         with st.spinner("🔎 Etap 2: Perplexity Sonar zbiera research merytoryczny…"):
             try:
                 research = query_perplexity_sonar(st.session_state.seo_analysis)
