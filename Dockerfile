@@ -18,10 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Kod aplikacji
 COPY . .
 
-# Cloud Run port
+# Cloud Run przekazuje PORT przez zmienną środowiskową (domyślnie 8080)
 EXPOSE 8080
 
-# Gunicorn — produkcyjny serwer WSGI
-# --timeout 600: dla dużych uploadów PDF (100+ MB)
-# --limit-request-body: max 500 MB (gunicorn domyślnie blokuje > ~130 KB)
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "-w", "2", "--timeout", "600", "--limit-request-body", "524288000", "app:app"]
+# Gunicorn używa gunicorn.conf.py z katalogu /app (automatyczne wykrycie)
+# Wszystkie ustawienia (port, workers, timeout, limit body) są w gunicorn.conf.py
+CMD ["gunicorn", "app:app"]
