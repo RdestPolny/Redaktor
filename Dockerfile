@@ -21,6 +21,6 @@ COPY . .
 # Cloud Run przekazuje PORT przez zmienną środowiskową (domyślnie 8080)
 EXPOSE 8080
 
-# Gunicorn używa gunicorn.conf.py z katalogu /app (automatyczne wykrycie)
-# Wszystkie ustawienia (port, workers, timeout, limit body) są w gunicorn.conf.py
-CMD ["gunicorn", "app:app"]
+# WAŻNE: --config musi być jawnie podany, gunicorn nie szuka gunicorn.conf.py automatycznie!
+# Bez tego startuje z domyślnym bind=127.0.0.1:8000 → Cloud Run health check odpada.
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "app:app"]

@@ -14,11 +14,17 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # tkinter do natywnego okna wyboru pliku (stdlib, brak instalacji)
+# UWAGA: na headless serwerach (Cloud Run) tkinter może rzucać TclError lub ImportError
 try:
     import tkinter as tk
     from tkinter import filedialog as tk_filedialog
+    # Szybki test czy tkinter faktycznie działa (wymaga $DISPLAY na Linuksie)
+    _root_test = tk.Tk()
+    _root_test.destroy()
     _TKINTER_AVAILABLE = True
-except ImportError:
+except Exception:
+    tk = None
+    tk_filedialog = None
     _TKINTER_AVAILABLE = False
 
 from flask import (
