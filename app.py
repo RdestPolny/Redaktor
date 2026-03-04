@@ -25,7 +25,7 @@ st.set_page_config(
     page_title="Redaktor AI",
     page_icon="📄",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # ===== STYLE =====
@@ -47,23 +47,6 @@ st.markdown("""
     font-size: 0.75rem;
     color: #a78bfa;
     font-family: monospace;
-}
-
-/* Karty na ekranie powitalnym */
-.welcome-card {
-    background: #1e1e2e;
-    border: 1px solid #2d2d3f;
-    border-radius: 12px;
-    padding: 1.5rem 1.8rem;
-    min-width: 180px;
-    max-width: 220px;
-    transition: all 0.3s ease;
-    cursor: default;
-}
-.welcome-card:hover {
-    transform: translateY(-5px);
-    border-color: #7c3aed;
-    box-shadow: 0 10px 20px rgba(0,0,0,0.3);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -118,14 +101,15 @@ def _redact_page(page_num: int):
         logger.error(f"Error redacting page {page_num}: {e}")
         return page_num, None
 
-# ===== SIDEBAR =====
+# ===== USTAWIENIA I WGRYWANIE =====
 
-with st.sidebar:
-    st.markdown("### 📄 Redaktor AI")
-    st.caption("Ekstrakcja i redakcja treści z dokumentów PDF")
-    st.divider()
+st.markdown("### 📄 Redaktor AI")
+st.caption("Ekstrakcja i redakcja treści z dokumentów PDF")
+st.divider()
 
-    # Upload
+col_upload, col_settings = st.columns([1, 1], gap="large")
+
+with col_upload:
     accept = ["pdf"]
     if DOCX_AVAILABLE:
         accept.append("docx")
@@ -133,12 +117,12 @@ with st.sidebar:
         accept.append("doc")
 
     uploaded = st.file_uploader(
-        "Wgraj dokument",
+        "Wgraj dokument (PDF, DOCX, DOC. Max 500 MB)",
         type=accept,
-        help="PDF, DOCX, DOC. Max 500 MB.",
+        help="Pliki będą przetwarzane lokalnie w pamięci Streamlit."
     )
 
-    st.divider()
+with col_settings:
     with st.expander("⚙️ Ustawienia i Modele", expanded=False):
         st.markdown(f"**Redakcja:** `{MODEL_REDAKCJA}`")
         st.markdown(f"**Artykuł:** `{MODEL_ARTYKUL}`")
@@ -150,76 +134,51 @@ with st.sidebar:
             help="Wyłączenie spowoduje pominięcie Etapu 2 (researchu merytorycznego) w pipeline SEO."
         )
 
-    if uploaded is not None:
-        file_id = f"{uploaded.name}_{uploaded.size}"
-        if file_id != st.session_state.file_id:
-            with st.spinner("Wczytywanie…"):
-                doc = _load_document(uploaded)
-            if doc:
-                st.session_state.doc = doc
-                st.session_state.filename = uploaded.name
-                st.session_state.file_id = file_id
-                st.session_state.total_pages = doc.get_page_count()
-                st.session_state.current_page = 1
-                st.session_state.transcriptions = {}
-                st.session_state.seo_result = None
-                st.rerun()
-
-        # Podsumowanie
-        done = len(st.session_state.transcriptions)
-        if done:
-            st.caption(f"✅ Zredagowane strony: **{done}** / {st.session_state.total_pages}")
-
-        st.divider()
-        if st.button("🚀 Redaguj wszystko (Równolegle)", type="primary", use_container_width=True, disabled=st.session_state.processing):
-            pages_to_do = [p for p in range(1, st.session_state.total_pages + 1) if p not in st.session_state.transcriptions]
-            if pages_to_do:
-                st.session_state.processing = True
-                progress_bar = st.progress(0, text="Uruchamiam przetwarzanie równoległe...")
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
-                    done_count = 0
-                    for future in concurrent.futures.as_completed(future_to_page):
-                        page_num, result = future.result()
-                        if result is not None:
-                            st.session_state.transcriptions[page_num] = result
-                        done_count += 1
-                        progress_bar.progress(done_count / len(pages_to_do), text=f"Postęp: {done_count}/{len(pages_to_do)} stron")
-                
-                st.session_state.processing = False
-                st.success("Przetwarzanie zakończone!")
-                st.rerun()
-
-# ===== WELCOME SCREEN =====
+if uploaded is not None:
+    file_id = f"{uploaded.name}_{uploaded.size}"
+    if file_id != st.session_state.file_id:
+        with st.spinner("Wczytywanie…"):
+            doc = _load_document(uploaded)
+        if doc:
+            st.session_state.doc = doc
+            st.session_state.filename = uploaded.name
+            st.session_state.file_id = file_id
+            st.session_state.total_pages = doc.get_page_count()
+            st.session_state.current_page = 1
+            st.session_state.transcriptions = {}
+            st.session_state.seo_result = None
+            st.rerun()
 
 if not st.session_state.doc:
-    welcome_html = f"""
-<div style="text-align:center;padding:4rem 2rem">
-<div style="font-size:4rem;margin-bottom:1rem">📄</div>
-<h1 style="color:#c4b5fd;margin-bottom:.5rem">Redaktor AI</h1>
-<p style="color:#64748b;font-size:1.1rem;margin-bottom:2.5rem">
-Wgraj dokument PDF lub Word w panelu po lewej stronie
-</p>
-<div style="display:flex;gap:1.2rem;justify-content:center;flex-wrap:wrap">
-""" + "".join(f"""
-<div class="welcome-card">
-<div style="font-size:2rem">{icon}</div>
-<h3 style="color:#a78bfa;margin:.5rem 0 .3rem">{name}</h3>
-<p style="color:#94a3b8;font-size:.85rem;margin:0">{desc}</p>
-</div>
-""" for icon, name, desc in [
-    ("📄", "Bieżąca strona", "Redakcja jednej strony + podgląd PDF"),
-    ("📋", "Zakres stron", "Redakcja zakresu strona-po-stronie"),
-    ("📚", "Cały dokument", "Cały dokument, każda strona osobno"),
-    ("🔍", "Artykuł SEO", "Nowy artykuł z kontekstem wielu stron"),
-    ("🖼️", "Grafiki", "Wyodrębnianie zdjęć i grafik"),
-]) + """
-</div>
-</div>
-"""
-    st.markdown(welcome_html, unsafe_allow_html=True)
+    st.info("⬆️ Wgraj dokument, aby rozpocząć pracę.")
     st.stop()
+
+# Jeśli dokument jest wgrany, pokaż narzędzia globalne:
+with col_settings:
+    done = len(st.session_state.transcriptions)
+    st.caption(f"✅ Zredagowane strony: **{done}** / {st.session_state.total_pages}")
+    
+    if st.button("🚀 Redaguj wszystko (Równolegle)", type="primary", use_container_width=True, disabled=st.session_state.processing):
+        pages_to_do = [p for p in range(1, st.session_state.total_pages + 1) if p not in st.session_state.transcriptions]
+        if pages_to_do:
+            st.session_state.processing = True
+            progress_bar = st.progress(0, text="Uruchamiam przetwarzanie równoległe...")
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
+                done_count = 0
+                for future in concurrent.futures.as_completed(future_to_page):
+                    page_num, result = future.result()
+                    if result is not None:
+                        st.session_state.transcriptions[page_num] = result
+                    done_count += 1
+                    progress_bar.progress(done_count / len(pages_to_do), text=f"Postęp: {done_count}/{len(pages_to_do)} stron")
+            
+            st.session_state.processing = False
+            st.success("Przetwarzanie zakończone!")
+            st.rerun()
+
+st.divider()
 
 # ===== GŁÓWNY INTERFEJS =====
 
