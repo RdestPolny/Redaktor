@@ -131,18 +131,28 @@ st.divider()
 
 col_upload, col_settings = st.columns([1, 1], gap="large")
 
-with col_upload:
-    accept = ["pdf"]
-    if DOCX_AVAILABLE:
-        accept.append("docx")
-    if MAMMOTH_AVAILABLE:
-        accept.append("doc")
+if st.session_state.doc is None:
+    with col_upload:
+        accept = ["pdf"]
+        if DOCX_AVAILABLE:
+            accept.append("docx")
+        if MAMMOTH_AVAILABLE:
+            accept.append("doc")
 
-    uploaded = st.file_uploader(
-        "Wgraj dokument (PDF, DOCX, DOC. Max 500 MB)",
-        type=accept,
-        help="Pliki będą przetwarzane lokalnie w pamięci Streamlit."
-    )
+        uploaded = st.file_uploader(
+            "Wgraj dokument (PDF, DOCX, DOC. Max 500 MB)",
+            type=accept,
+            help="Pliki będą przetwarzane lokalnie w pamięci Streamlit."
+        )
+else:
+    with col_upload:
+        st.success(f"📄 Wgrano: **{st.session_state.filename}**")
+        if st.button("🔄 Wgraj nowy plik", use_container_width=True):
+            st.session_state.doc = None
+            st.session_state.file_id = None
+            st.session_state.transcriptions = {}
+            st.rerun()
+    uploaded = None
 
 with col_settings:
     st.markdown("##### 🛠️ Konfiguracja Pracy")
@@ -160,13 +170,21 @@ with col_settings:
     if mode == "Lekka Redakcja (Korekta + HTML)":
         scope = st.selectbox(
             "Zakres przetwarzania:",
-            ["Bieżąca strona", "Zakres stron (np. 1-5)", "Wszystkie brakujące strony"],
+            ["Bieżąca strona", "Zakres stron (np. 1-5)", "Artykuł wielostronicowy"],
             index=0
         )
         st.session_state.redaction_scope = scope
     else:
-        # Artykuł SEO — tu zakres jest wpisywany tekstowo (np. 10-15)
-        st.info("💡 Tryb SEO wymaga podania zakresu stron źródłowych poniżej.")
+        # Artykuł SEO
+        st.session_state.redaction_scope = "SEO"
+
+    # Dynamiczny input zakresu (widoczny jeśli nie 'Bieżąca strona')
+    if (st.session_state.active_mode == "Generator Artykułu SEO (3 etapy)") or (st.session_state.redaction_scope in ["Zakres stron (np. 1-5)", "Artykuł wielostronicowy"]):
+        st.session_state.seo_page_range = st.text_input(
+            "Podaj zakres stron (np. 1-5):",
+            value=st.session_state.seo_page_range,
+            placeholder=f"max {st.session_state.get('total_pages', '?')}"
+        )
 
     with st.expander("⚙️ Zaawansowane (Modele i Klucze)", expanded=False):
         st.markdown(f"**Redakcja:** `{MODEL_REDAKCJA}`")
@@ -210,47 +228,35 @@ with col_settings:
     done = len(st.session_state.transcriptions)
     st.caption(f"✅ Zredagowane strony: **{done}** / {st.session_state.total_pages}")
     
-    # Obsługa zakresu "Wszystkie brakujące" w trybie Redakcji
-    if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)" and st.session_state.redaction_scope == "Wszystkie brakujące strony":
-        if st.button("🚀 Uruchom Przetwarzanie Zbiorcze", type="primary", use_container_width=True, disabled=st.session_state.processing):
-            pages_to_do = [p for p in range(1, st.session_state.total_pages + 1) if p not in st.session_state.transcriptions]
-            if not pages_to_do:
-                st.info("Wszystkie strony zostały już zredagowane.")
-            else:
-                st.session_state.processing = True
-                progress_bar = st.progress(0, text="Uruchamiam przetwarzanie równoległe (max 5 wątków)...")
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                    future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
-                    done_count = 0
-                    errors = []
-                    for future in concurrent.futures.as_completed(future_to_page):
-                        p_num = future_to_page[future]
-                        try:
-                            page_num, result = future.result()
-                            if result:
-                                st.session_state.transcriptions[page_num] = result
-                            else:
-                                errors.append(f"Strona {page_num}: Brak wyniku (pusty tekst?)")
-                        except Exception as e:
-                            errors.append(f"Strona {p_num}: {e}")
+    # Obsługa zakresu "Artykuł wielostronicowy"
+    if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)" and st.session_state.redaction_scope == "Artykuł wielostronicowy":
+        if st.button("🚀 Redaguj jako cały artykuł", type="primary", use_container_width=True):
+            parsed = _parse_page_range(st.session_state.seo_page_range, st.session_state.total_pages)
+            if parsed:
+                s_from, s_to = parsed
+                with st.spinner(f"Redagowanie stron {s_from}-{s_to} jako jedna treść..."):
+                    try:
+                        combined_text = ""
+                        for p in range(s_from, s_to + 1):
+                            pc = st.session_state.doc.extract_page_content(p - 1)
+                            combined_text += f"\n\n--- [Strona {p}] ---\n\n{pc.text}"
                         
-                        done_count += 1
-                        progress_bar.progress(done_count / len(pages_to_do), text=f"Postęp: {done_count}/{len(pages_to_do)} stron")
-                
-                st.session_state.processing = False
-                if errors:
-                    st.warning(f"Zakończono z błędami ({len(errors)}):\n" + "\n".join(errors[:5]))
-                else:
-                    st.success("Wszystkie strony przetworzone pomyślnie!")
-                st.rerun()
+                        ai = AIProcessor.redakcja()
+                        result = ai.edit_page_text(combined_text)
+                        
+                        # Zapisujemy jako specjalny wpis w transkrypcjach
+                        st.session_state.transcriptions[f"range_{s_from}_{s_to}"] = result
+                        st.success("Przetworzono pomyślnie!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Błąd: {e}")
+            else:
+                st.error("Podaj poprawny zakres (np. 1-5) w panelu konfiguracji.")
 
     # Obsługa zakresu "Zakres stron" w trybie Redakcji
     elif st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)" and st.session_state.redaction_scope == "Zakres stron (np. 1-5)":
-        r_text = st.text_input("Podaj zakres (np. 5-10):", placeholder=f"1-{st.session_state.total_pages}")
-        if st.button("🚀 Redaguj wybrany zakres", type="primary", use_container_width=True):
-    # Usunięto from app import _parse_page_range (jest teraz na górze)
-            parsed = _parse_page_range(r_text, st.session_state.total_pages)
+        if st.button("🚀 Redaguj strony osobno", type="primary", use_container_width=True):
+            parsed = _parse_page_range(st.session_state.seo_page_range, st.session_state.total_pages)
             if parsed:
                 s_from, s_to = parsed
                 pages_to_do = [p for p in range(s_from, s_to + 1) if p not in st.session_state.transcriptions]
@@ -281,9 +287,27 @@ total_pages: int = st.session_state.total_pages
 
 # Warunkowe wyświetlanie w zależności od trybu
 if st.session_state.active_mode == "Lekka Redakcja (Korekta + HTML)":
-    # ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
     # INTERFEJS REDAKCJI
     # ══════════════════════════════════════════════════════════════
+    
+    # Przetwarzanie wielostronicowe — specjalny widok
+    range_results = [k for k in st.session_state.transcriptions.keys() if isinstance(k, str) and k.startswith("range_")]
+    if range_results:
+        with st.expander("📚 Wyniki Artykułów Wielostronicowych", expanded=True):
+            for key in range_results:
+                label = key.replace("range_", "Strony ").replace("_", "–")
+                st.markdown(f"#### {label}")
+                st.markdown(f'<div style="background: white; color: black; padding: 20px; border-radius: 8px; max-height: 400px; overflow-y: auto;">{st.session_state.transcriptions[key]}</div>', unsafe_allow_html=True)
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button(f"⬇️ Pobierz {label}", st.session_state.transcriptions[key].encode("utf-8"), f"redakcja_{key}.html", "text/html", key=f"dl_{key}")
+                with c2:
+                    if st.button(f"🗑️ Usuń {label}", key=f"del_{key}"):
+                        del st.session_state.transcriptions[key]
+                        st.rerun()
+                st.divider()
+
     nav1, nav2, nav3 = st.columns([2, 1, 2])
     with nav1:
         st.subheader(f"Strona {current_page} z {total_pages}")
@@ -374,52 +398,12 @@ else:
 st.divider()
 
 # TABS for other tools
-tab_seo, tab_grafiki, tab_batch = st.tabs([
+tab_seo, tab_grafiki = st.tabs([
     "🔍 Artykuł SEO" + (" (AKTYWNY)" if st.session_state.active_mode != "Lekka Redakcja (Korekta + HTML)" else ""),
     "🖼️ Grafiki",
-    "📋 Narzędzia zbiorcze"
 ])
 
-with tab_batch:
-    st.subheader("📋 Narzędzia zbiorcze")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("🚀 Redaguj Brakujące Strony", use_container_width=True):
-            # To samo co w sidebarze ale tutaj widoczne
-            pages_to_do = [p for p in range(1, total_pages + 1) if p not in st.session_state.transcriptions]
-            if pages_to_do:
-                with st.status("Przetwarzanie równoległe...") as status:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                        future_to_page = {executor.submit(_redact_page, p): p for p in pages_to_do}
-                        for future in concurrent.futures.as_completed(future_to_page):
-                            p_num, res = future.result()
-                            if res:
-                                st.session_state.transcriptions[p_num] = res
-                            st.write(f"Zakończono stronę {p_num}")
-                    status.update(label="Gotowe!", state="complete")
-                    st.rerun()
-    
-    with c2:
-        if st.button("🗑️ Wyczyść wszystko", type="secondary", use_container_width=True):
-            st.session_state.transcriptions = {}
-            st.rerun()
-
-    # Eksport całości
-    done_count = len(st.session_state.transcriptions)
-    if done_count:
-        st.divider()
-        _all = "<html><head><meta charset='utf-8'><style>body{font-family:sans-serif;line-height:1.6;max-width:800px;margin:40px auto;padding:20px;} .page-divider{border-top:2px solid #eee;margin:40px 0;padding-top:20px;color:#888;font-size:0.8em;text-transform:uppercase;}</style></head><body>"
-        for pg, txt in sorted(st.session_state.transcriptions.items()):
-            _all += f"<div class='page-divider'>Strona {pg}</div>\n{txt}\n"
-        _all += "</body></html>"
-        st.download_button(
-            f"⬇️ Pobierz wszystkie zredagowane strony ({done_count}) - Kod HTML",
-            data=_all.encode("utf-8"),
-            file_name=f"{Path(doc.filename).stem}_redakcja_calosc.html",
-            mime="text/html",
-            use_container_width=True,
-        )
+# Usuwam Tab Batch całkowicie (zakładka Narzędzia zbiorcze)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -445,29 +429,17 @@ with tab_seo:
     # ── INPUT: zakres stron ──────────────────────────────────────
     import re as _re_seo  # noqa: F811 (lokalnie, re już zaimportowane wyżej)
 
-    col_input, col_hint = st.columns([1, 2], gap="large")
-    with col_input:
-        st.markdown("**📄 Zakres stron źródłowych:**")
-        range_input = st.text_input(
-            "Zakres stron",
-            value=st.session_state.seo_page_range,
-            placeholder=f"np. 10-15  (dokument ma {total_pages} stron)",
-            key="seo_range_input",
-            label_visibility="collapsed",
-        )
-        st.caption(f"Wpisz zakres stron, np. `5-12` lub pojedynczą stronę `7`. Max: {total_pages}.")
+    parsed_range = _parse_page_range(st.session_state.seo_page_range, total_pages)
 
-    parsed_range = _parse_page_range(range_input, total_pages)
-
-    with col_hint:
-        if parsed_range:
-            s_from, s_to = parsed_range
-            n_pages = s_to - s_from + 1
-            st.success(f"✅ Zakres poprawny: strony **{s_from}–{s_to}** ({n_pages} {'strona' if n_pages == 1 else 'stron'})")
-        elif range_input.strip():
-            st.error(f"❌ Niepoprawny zakres. Podaj np. `10-15` (max {total_pages}).")
+    if not parsed_range:
+        if st.session_state.seo_page_range.strip():
+            st.error(f"❌ Niepoprawny zakres: `{st.session_state.seo_page_range}`. Podaj np. `10-15` (max {total_pages}).")
         else:
-            st.info("⬅️ Podaj zakres stron aby rozpocząć.")
+            st.info("⬅️ Podaj zakres stron w panelu Konfiguracji Pracy powyżej.")
+    else:
+        s_from, s_to = parsed_range
+        n_pages = s_to - s_from + 1
+        st.success(f"✅ Zakres wybrany: strony **{s_from}–{s_to}** ({n_pages} stron)")
 
     can_run = parsed_range is not None
 
@@ -512,7 +484,7 @@ with tab_seo:
     # ── ETAP 1: ANALIZA SEO ─────────────────────────────────────
     if run_step1 and parsed_range:
         s_from, s_to = parsed_range
-        st.session_state.seo_page_range = range_input.strip()
+        # seo_page_range jest już zsynchronizowany bo uzywamy session_state w input
         with st.spinner(f"🧠 Etap 1: Gemini analizuje strony {s_from}–{s_to} pod kątem SEO…"):
             try:
                 texts = []
