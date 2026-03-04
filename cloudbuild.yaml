@@ -1,8 +1,5 @@
 # Cloud Build — automatyczny deploy na Cloud Run
 # Użycie: gcloud builds submit --config cloudbuild.yaml
-#
-# UWAGA: Cloud Run ma limit 32MB na HTTP request body (nie można zmienić!).
-# Dla plików > 32MB konieczny jest upload przez GCS (signed URL) lub lokalny deploy.
 
 steps:
   # Build Docker image
@@ -24,10 +21,11 @@ steps:
       - '--region=europe-central2'
       - '--platform=managed'
       - '--allow-unauthenticated'
-      - '--memory=4Gi'          # 4GB dla dużych PDF w pamięci
-      - '--cpu=2'               # 2 CPU dla równoległego przetwarzania
-      - '--timeout=900'         # 15 min timeout dla przetwarzania
-      - '--concurrency=1'       # 1 request naraz (single-user design)
+      - '--port=8080'             # Cloud Run nasłuchuje na tym porcie (Streamlit też 8080)
+      - '--memory=2Gi'
+      - '--cpu=1'
+      - '--timeout=900'           # 15 min dla długich operacji AI
+      - '--concurrency=10'        # Streamlit obsługuje wielu użytkowników
       - '--set-env-vars=GOOGLE_API_KEY=${_GOOGLE_API_KEY}'
 
 images:

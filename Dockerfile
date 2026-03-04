@@ -15,12 +15,20 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Kod aplikacji
+# Kod aplikacji (w tym .streamlit/config.toml!)
 COPY . .
 
-# Cloud Run przekazuje PORT przez zmienną środowiskową (domyślnie 8080)
+# Cloud Run używa portu 8080 — ustawiamy go jawnie w config.toml
+# PORT jest też dostępny jako zmienna środowiskowa
 EXPOSE 8080
 
-# WAŻNE: --config musi być jawnie podany, gunicorn nie szuka gunicorn.conf.py automatycznie!
-# Bez tego startuje z domyślnym bind=127.0.0.1:8000 → Cloud Run health check odpada.
-CMD ["gunicorn", "--config", "gunicorn.conf.py", "app:app"]
+# Streamlit na Cloud Run:
+# - port 8080 (Cloud Run wymaga dokładnie tego portu)
+# - 0.0.0.0 żeby Cloud Run mógł połączyć się z kontenerem
+# - headless=true wyłącza próby otwarcia przeglądarki
+CMD ["streamlit", "run", "app.py", \
+    "--server.port=8080", \
+    "--server.address=0.0.0.0", \
+    "--server.headless=true", \
+    "--server.enableCORS=false", \
+    "--server.enableXsrfProtection=false"]

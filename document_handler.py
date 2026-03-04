@@ -1,10 +1,9 @@
 """
 Redaktor AI — Document Handler
-Obsługa różnych formatów dokumentów (PDF, DOCX, DOC).
+Obsługa PDF, DOCX, DOC: ekstrakcja tekstu, obrazów, renderowanie stron.
 """
 
 import io
-import re
 import logging
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -14,9 +13,8 @@ import fitz  # PyMuPDF
 
 logger = logging.getLogger(__name__)
 
-# Skala renderowania strony (2.0 = 144 DPI, 3.0 = 216 DPI)
-RENDER_SCALE_PREVIEW = 2.0
-RENDER_SCALE_HIGHRES = 3.0
+# Skala renderowania (2.0 = 144 DPI)
+RENDER_SCALE = 2.0
 
 # Opcjonalne importy
 try:
@@ -34,14 +32,17 @@ except ImportError:
 
 @dataclass
 class PageContent:
-    """Reprezentuje zawartość pojedynczej strony."""
-    page_number: int
-    text: str
-    images: List[Dict] = field(default_factory=list)
+    """Zawartość pojedynczej strony."""
+    page_number: int       # 1-indexed
+    text: str              # Wyekstrahowany tekst (zachowana kolejność)
+    images: List[Dict] = field(default_factory=list)   # metadane obrazów
+    has_images: bool = False
+    estimated_columns: int = 1
+    is_mostly_image: bool = False   # strona głównie graficzna
 
 
 class DocumentHandler:
-    """Klasa do obsługi różnych formatów dokumentów."""
+    """Obsługa różnych formatów dokumentów."""
 
     def __init__(self, file_source, filename: str):
         self.filename = filename
@@ -54,9 +55,13 @@ class DocumentHandler:
             self.file_path = str(file_source)
             self.file_bytes = None
         else:
-            self.file_bytes = file_source
+            # BytesIO lub bytes
+            if hasattr(file_source, 'read'):
+                self.file_bytes = file_source.read()
+            else:
+                self.file_bytes = bytes(file_source)
             self.file_path = None
-            
+
         self._load_document()
 
     def _detect_file_type(self, filename: str) -> str:
@@ -65,18 +70,14 @@ class DocumentHandler:
             return 'pdf'
         elif ext == '.docx':
             if not DOCX_AVAILABLE:
-                raise ValueError(
-                    "Format DOCX nie jest obsługiwany. Zainstaluj: pip install python-docx"
-                )
+                raise ValueError("Format DOCX wymaga: pip install python-docx")
             return 'docx'
         elif ext == '.doc':
             if not MAMMOTH_AVAILABLE:
-                raise ValueError(
-                    "Format DOC nie jest obsługiwany. Zainstaluj: pip install mammoth"
-                )
+                raise ValueError("Format DOC wymaga: pip install mammoth")
             return 'doc'
         else:
-            raise ValueError(f"Nieobsługiwany format pliku: {ext}")
+            raise ValueError(f"Nieobsługiwany format: {ext}")
 
     def _load_document(self):
         if self.file_type == 'pdf':
@@ -96,448 +97,230 @@ class DocumentHandler:
             else:
                 result = mammoth.convert_to_html(io.BytesIO(self.file_bytes))
             self._html_content = result.value
-            self._document = None
 
     def get_page_count(self) -> int:
         if self.file_type == 'pdf':
             return len(self._document)
-        elif self.file_type == 'docx':
-            all_text = '\n\n'.join([p.text for p in self._document.paragraphs])
-            words = all_text.split()
-            return max(1, len(words) // 500 + (1 if len(words) % 500 > 0 else 0))
-        elif self.file_type == 'doc':
-            words = self._html_content.split()
-            return max(1, len(words) // 500 + (1 if len(words) % 500 > 0 else 0))
+        elif self.file_type in ('docx', 'doc'):
+            # Szacuj liczbę "stron" na podstawie słów
+            if self.file_type == 'docx':
+                text = '\n'.join(p.text for p in self._document.paragraphs)
+            else:
+                text = self._html_content
+            words = len(text.split())
+            return max(1, words // 400)
         return 0
 
-    def analyze_page_complexity(self, page_index: int) -> dict:
-        """Analizuje złożoność strony i rekomenduje tryb przetwarzania.
+    # ===== RENDEROWANIE STRONY =====
 
-        Metryki:
-        - image_coverage: % obszaru strony zajęty przez obrazy (0-100)
-        - text_blocks: liczba bloków tekstowych
-        - estimated_columns: szacowana liczba kolumn (1, 2, 3)
-        - has_framed_blocks: czy wykryto bloki tekstowe w ramkach (sidebar/inset)
-        - has_chart_labels: czy krótkie teksty sugerują etykiety wykresów
-        - recommended_mode: 'vision' lub 'text'
-        - reason: powód rekomendacji
+    def render_page_as_image(self, page_index: int) -> Optional[bytes]:
+        """Renderuje stronę PDF jako PNG (zwraca bytes)."""
+        if self.file_type != 'pdf' or not self._document:
+            return None
+        if page_index < 0 or page_index >= len(self._document):
+            return None
 
-        Logika rekomendacji vision:
-        - image_coverage >= 25% → strona z wykresami/infografikami
-        - has_framed_blocks == True → sidebar/ramka zaburza ekstrakcję kolumn
-        - text_blocks < 5 → za mało tekstu (obrazkowa strona)
-        """
-        if self.file_type != 'pdf':
-            return {
-                'image_coverage': 0,
-                'text_blocks': 0,
-                'estimated_columns': 1,
-                'has_framed_blocks': False,
-                'has_chart_labels': False,
-                'recommended_mode': 'text',
-                'reason': 'Nie-PDF — ekstrakcja tekstowa',
-            }
+        page = self._document[page_index]
+        mat = fitz.Matrix(RENDER_SCALE, RENDER_SCALE)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        return pix.tobytes("png")
 
-        try:
-            page = self._document.load_page(page_index)
-        except Exception as e:
-            return {
-                'image_coverage': 0, 'text_blocks': 0, 'estimated_columns': 1,
-                'has_framed_blocks': False, 'has_chart_labels': False,
-                'recommended_mode': 'text', 'reason': f'Błąd analizy: {e}',
-            }
+    # ===== EKSTRAKCJA TEKSTU =====
 
-        page_rect = page.rect
-        page_area = page_rect.width * page_rect.height
-
-        # 1. Pokrycie przez obrazy
-        image_rects = self._get_image_rects(page)
-        image_area = 0.0
-        for ir in image_rects:
-            w = ir[2] - ir[0]
-            h = ir[3] - ir[1]
-            image_area += max(0, w) * max(0, h)
-        image_coverage = min(100.0, (image_area / page_area * 100)) if page_area > 0 else 0.0
-
-        # 2. Bloki tekstowe
-        all_blocks = page.get_text("blocks")
-        text_blocks = [b for b in all_blocks if b[6] == 0 and b[4].strip()]
-        n_text_blocks = len(text_blocks)
-
-        # 3. Szacowanie liczby kolumn (gap-based, uproszczone)
-        estimated_columns = 1
-        if n_text_blocks >= 3:
-            cols = self._detect_columns(text_blocks, page_rect.width)
-            estimated_columns = len(cols) if cols else 1
-
-        # 4. Detekcja ramek/insetów
-        # Blok jest prawdopodobnie w ramce jeśli jest otoczony innymi blokami
-        # na tej samej osi Y (nie rozciąga się przez pełną szerokość ani kolonę)
-        # Heurystyka: blok o szerokości 40-85% strony, którego lewy margines > 5%
-        # i prawy margines > 5% — typowe dla boxów/insetów
-        has_framed_blocks = False
-        page_w = page_rect.width
-        for b in text_blocks:
-            bw = b[2] - b[0]
-            bl = b[0]
-            br = page_w - b[2]
-            rel_w = bw / page_w
-            if 0.35 < rel_w < 0.90 and bl > page_w * 0.04 and br > page_w * 0.04:
-                # Sprawdź czy inne bloki nachodzą na tę samą oś Y
-                b_ymid = (b[1] + b[3]) / 2
-                overlapping_y = [
-                    ob for ob in text_blocks
-                    if ob is not b and ob[1] < b_ymid < ob[3]
-                ]
-                if overlapping_y:
-                    has_framed_blocks = True
-                    break
-
-        # 5. Detekcja etykiet wykresów (krótkie bloki < 30 znaków, dużo ich)
-        short_blocks = [b for b in text_blocks if len(b[4].strip()) < 35]
-        chart_label_ratio = len(short_blocks) / n_text_blocks if n_text_blocks > 0 else 0
-        has_chart_labels = chart_label_ratio > 0.45 and len(short_blocks) >= 4
-
-        # --- Reguły rekomendacji ---
-        reason = ''
-        recommended_mode = 'text'
-
-        if image_coverage >= 25:
-            recommended_mode = 'vision'
-            reason = f'Wykresy/grafiki zajmują {image_coverage:.0f}% strony'
-        elif has_framed_blocks and estimated_columns >= 2:
-            recommended_mode = 'vision'
-            reason = 'Wykryto ramkę/inset obok kolumn tekstu'
-        elif has_chart_labels and image_coverage >= 10:
-            recommended_mode = 'vision'
-            reason = f'Etykiety wykresów ({len(short_blocks)} krótkich bloków) + obrazy'
-        elif n_text_blocks < 4 and image_coverage >= 10:
-            recommended_mode = 'vision'
-            reason = 'Mało tekstu, dużo elementów graficznych'
-        else:
-            reason = f'{estimated_columns}-kolumnowy układ tekstowy ({n_text_blocks} bloków)'
-
-        return {
-            'image_coverage': round(image_coverage, 1),
-            'text_blocks': n_text_blocks,
-            'estimated_columns': estimated_columns,
-            'has_framed_blocks': has_framed_blocks,
-            'has_chart_labels': has_chart_labels,
-            'recommended_mode': recommended_mode,
-            'reason': reason,
-        }
-
-
-    def get_page_content(self, page_index: int) -> PageContent:
+    def extract_page_content(self, page_index: int) -> PageContent:
+        """Wyciąga tekst ze strony z zachowaniem kolejności czytania."""
         if self.file_type == 'pdf':
-            page = self._document.load_page(page_index)
-            text = self._extract_text_with_layout(page)
-            images = self._extract_images_from_pdf_page(page_index)
-            return PageContent(page_index + 1, text, images)
-        elif self.file_type == 'docx':
-            return self._get_docx_page_content(page_index)
-        elif self.file_type == 'doc':
-            return self._get_doc_page_content(page_index)
+            return self._extract_pdf_page(page_index)
+        elif self.file_type in ('docx', 'doc'):
+            return self._extract_doc_page(page_index)
+        return PageContent(page_number=page_index + 1, text="")
 
-    # Wzorce do filtrowania nagłówków/stopek
-    _HEADER_FOOTER_PATTERNS = re.compile(
-        r'^(\d{1,3})\s*$'             # sam numer strony
-        r'|^www\.\S+\.\S+'            # URL jak www.audio.com.pl
-        r'|^https?://\S+'             # pełny URL
-        r'|^\d{1,3}\s+www\.\S+'       # "41 www.audio.com.pl"
-        r'|^str\.\s*\d+'              # "str. 41"
-        r'|^AUDIO\s'                  # nagłówki redakcyjne
-        , re.IGNORECASE | re.MULTILINE
-    )
-
-    def _extract_text_with_layout(self, page) -> str:
-        """Ekstrakcja tekstu z uwzględnieniem layoutu wielokolumnowego.
-
-        Algorytm:
-        1. Pobierz bloki tekstowe z bounding-boxami
-        2. Odfiltruj nagłówki/stopki (marginesy górny/dolny)
-        3. Wykryj kolumny za pomocą gap-based clustering
-        4. Oddziel podpisy do zdjęć od tekstu głównego
-        5. Sortuj: podpisy (góra→dół), potem kolumny (lewa→prawa, góra→dół)
-        """
-        blocks = page.get_text("blocks")
-        # Filtruj tylko bloki tekstowe (typ 0), pomiń obrazy (typ 1)
-        text_blocks = [b for b in blocks if b[6] == 0]
-
-        if not text_blocks:
-            return ""
-
-        if len(text_blocks) == 1:
-            return text_blocks[0][4].strip()
-
-        # Wymiary strony
+    def _extract_pdf_page(self, page_index: int) -> PageContent:
+        """Ekstrakcja tekstu z PDF z uwzględnieniem wielokolumnowego układu."""
+        page = self._document[page_index]
         page_rect = page.rect
-        page_height = page_rect.height
         page_width = page_rect.width
 
-        # 1. Filtruj nagłówki/stopki (górne/dolne 6% strony z typowymi wzorcami)
-        margin_top = page_height * 0.06
-        margin_bottom = page_height * 0.94
-        filtered_blocks = []
-        for b in text_blocks:
-            text = b[4].strip()
-            if not text:
-                continue
-            # Blok w marginesie górnym lub dolnym
-            is_in_margin = (b[1] < margin_top) or (b[3] > margin_bottom)
-            if is_in_margin and self._is_header_footer(text):
-                continue
-            filtered_blocks.append(b)
+        # Pobierz wszystkie bloki tekstu
+        blocks = page.get_text("blocks", sort=True)
+        # blocks: (x0, y0, x1, y1, text, block_no, block_type)
+        # block_type: 0=text, 1=image
 
-        if not filtered_blocks:
-            # Jeśli wszystko odfiltrowane, zwróć oryginalne bloki
-            filtered_blocks = [b for b in text_blocks if b[4].strip()]
+        text_blocks = [b for b in blocks if b[6] == 0 and b[4].strip()]
+        image_blocks = [b for b in blocks if b[6] == 1]
 
-        if len(filtered_blocks) == 1:
-            return filtered_blocks[0][4].strip()
+        # Sprawdź czy strona jest głównie graficzna
+        page_area = page_width * page_rect.height
+        image_area = sum((b[2]-b[0]) * (b[3]-b[1]) for b in image_blocks)
+        image_coverage = (image_area / page_area * 100) if page_area > 0 else 0
+        is_mostly_image = image_coverage > 60 or (len(text_blocks) < 3 and len(image_blocks) > 0)
 
-        # 2. Pobierz pozycje obrazów na stronie (do detekcji podpisów)
-        image_rects = self._get_image_rects(page)
+        # Detekcja kolumn — sprawdź czy bloki są wyraźnie podzielone w poziomie
+        estimated_columns = self._estimate_columns(text_blocks, page_width)
 
-        # 3. Oddziel podpisy od tekstu głównego
-        captions = []
-        body_blocks = []
-        for b in filtered_blocks:
-            text = b[4].strip()
-            if self._is_caption(b, text, image_rects, page_width):
-                captions.append(b)
-            else:
-                body_blocks.append(b)
+        if estimated_columns >= 2:
+            text = self._extract_multicolumn(text_blocks, page_width, estimated_columns)
+        else:
+            # Jedna kolumna — złącz w kolejności Y
+            text = "\n\n".join(b[4].strip() for b in text_blocks)
 
-        if not body_blocks:
-            body_blocks = filtered_blocks
-            captions = []
+        # Wyczyść artefakty
+        text = self._clean_text(text)
 
-        # 4. Wykryj kolumny w blokach głównych
-        columns = self._detect_columns(body_blocks, page_width)
+        # Zbierz metadane obrazów
+        image_meta = []
+        for img in page.get_images(full=True):
+            xref = img[0]
+            try:
+                info = self._document.extract_image(xref)
+                if info["width"] >= 50 and info["height"] >= 50:
+                    image_meta.append({
+                        "xref": xref,
+                        "width": info["width"],
+                        "height": info["height"],
+                        "ext": info["ext"],
+                    })
+            except Exception:
+                pass
 
-        # 5. Sortuj kolumny od lewej do prawej
-        columns.sort(key=lambda col: min(b[0] for b in col))
+        return PageContent(
+            page_number=page_index + 1,
+            text=text,
+            images=image_meta,
+            has_images=len(image_meta) > 0,
+            estimated_columns=estimated_columns,
+            is_mostly_image=is_mostly_image,
+        )
 
-        # 6. Buduj tekst wynikowy
+    def _estimate_columns(self, text_blocks: list, page_width: float) -> int:
+        """Szacuje liczbę kolumn na podstawie rozkładu X bloków tekstu."""
+        if len(text_blocks) < 4:
+            return 1
+
+        # Zbierz środki X bloków
+        centers = [(b[0] + b[2]) / 2 for b in text_blocks]
+        mid = page_width / 2
+
+        # Policz bloki po lewej i prawej stronie środka
+        left = sum(1 for c in centers if c < mid * 0.9)
+        right = sum(1 for c in centers if c > mid * 1.1)
+
+        if left >= 2 and right >= 2:
+            # Sprawdź czy jest 3. kolumna
+            third = page_width * 0.66
+            far_right = sum(1 for c in centers if c > third)
+            if far_right >= 2 and left >= 2:
+                return 3
+            return 2
+        return 1
+
+    def _extract_multicolumn(self, text_blocks: list, page_width: float, n_cols: int) -> str:
+        """Ekstrahuje tekst z układu wielokolumnowego — kolumna po kolumnie."""
+        col_width = page_width / n_cols
+        columns: Dict[int, list] = {i: [] for i in range(n_cols)}
+
+        for block in text_blocks:
+            x_center = (block[0] + block[2]) / 2
+            col_idx = min(int(x_center / col_width), n_cols - 1)
+            columns[col_idx].append(block)
+
+        # Posortuj każdą kolumnę od góry do dołu
         result_parts = []
-
-        # Najpierw podpisy — posortowane po pozycji Y (góra→dół)
-        captions.sort(key=lambda b: b[1])
-        for block in captions:
-            text = block[4].strip()
-            if text:
-                result_parts.append(text)
-
-        # Potem tekst główny — kolumna po kolumnie
-        for col_blocks in columns:
-            col_blocks.sort(key=lambda b: b[1])  # sortuj po y0
-            for block in col_blocks:
-                text = block[4].strip()
-                if text:
-                    result_parts.append(text)
+        for col_idx in range(n_cols):
+            col_blocks = sorted(columns[col_idx], key=lambda b: b[1])
+            col_text = "\n\n".join(b[4].strip() for b in col_blocks)
+            if col_text.strip():
+                result_parts.append(col_text)
 
         return "\n\n".join(result_parts)
 
-    def _is_header_footer(self, text: str) -> bool:
-        """Sprawdza czy tekst to typowy nagłówek/stopka strony."""
-        text = text.strip()
-        if len(text) > 100:
-            return False  # za długi na nagłówek/stopkę
-        return bool(self._HEADER_FOOTER_PATTERNS.match(text))
+    def _clean_text(self, text: str) -> str:
+        """Usuwa typowe artefakty z ekstrakcji PDF."""
+        import re
+        lines = text.split('\n')
+        clean = []
+        for line in lines:
+            stripped = line.strip()
+            # Usuń izolowane numery stron (np. "42", "- 42 -")
+            if re.match(r'^[-–\s]*\d{1,4}[-–\s]*$', stripped):
+                continue
+            # Usuń URL-e redakcyjne
+            if re.match(r'^www\.[a-z]+\.[a-z]+', stripped, re.IGNORECASE):
+                continue
+            # Połącz łamanie wyrazów na końcu linii ("transforma-\ntorem" → "transformatorem")
+            if clean and stripped and clean[-1].endswith('-'):
+                clean[-1] = clean[-1][:-1] + stripped
+                continue
+            clean.append(line)
+        return '\n'.join(clean)
 
-    @staticmethod
-    def _get_image_rects(page) -> list:
-        """Zwraca listę prostokątów (x0, y0, x1, y1) obrazów na stronie."""
-        rects = []
-        try:
-            for img in page.get_images(full=True):
-                xref = img[0]
-                for inst in page.get_image_rects(xref):
-                    rects.append((inst.x0, inst.y0, inst.x1, inst.y1))
-        except Exception:
-            pass
-        return rects
+    def _extract_doc_page(self, page_index: int) -> PageContent:
+        """Ekstrakcja 'strony' z DOCX/DOC (wirtualne stronicowanie)."""
+        if self.file_type == 'docx':
+            all_paragraphs = [p.text for p in self._document.paragraphs if p.text.strip()]
+            words_per_page = 400
+            all_words = []
+            for para in all_paragraphs:
+                all_words.extend(para.split())
+                all_words.append('\n')
+            start = page_index * words_per_page
+            end = start + words_per_page
+            text = ' '.join(all_words[start:end])
+        else:
+            import re
+            plain = re.sub(r'<[^>]+>', ' ', self._html_content)
+            words = plain.split()
+            start = page_index * 400
+            text = ' '.join(words[start:start + 400])
 
-    @staticmethod
-    def _is_caption(block, text: str, image_rects: list,
-                    page_width: float) -> bool:
-        """Sprawdza czy blok to podpis do zdjęcia.
+        return PageContent(page_number=page_index + 1, text=text)
 
-        Kryteria: krótki tekst (< 200 znaków), blisko obrazu (w pionie),
-        i nie rozciąga się na pełną szerokość strony.
+    # ===== EKSTRAKCJA OBRAZÓW =====
+
+    def extract_page_images(self, page_index: int) -> List[Dict]:
+        """Zwraca listę obrazów ze strony jako bytes (PNG).
+
+        Każdy element: { 'bytes': bytes, 'width': int, 'height': int, 'ext': str }
         """
-        if len(text) > 200:
-            return False
-
-        block_width = block[2] - block[0]
-        # Podpis zwykle nie zajmuje więcej niż ~55% szerokości strony
-        if block_width > page_width * 0.55:
-            return False
-
-        # Sprawdź bliskość pionową do obrazu (w granicach 30px)
-        proximity = 30
-        b_y0, b_y1 = block[1], block[3]
-        for img_rect in image_rects:
-            img_y0, img_y1 = img_rect[1], img_rect[3]
-            # Podpis tuż pod lub tuż nad obrazem
-            if abs(b_y0 - img_y1) < proximity or abs(img_y0 - b_y1) < proximity:
-                return True
-
-        return False
-
-    @staticmethod
-    def _detect_columns(text_blocks: list, page_width: float = None) -> list:
-        """Grupuje bloki tekstowe w kolumny za pomocą gap-based clustering.
-
-        Zamiast stałego progu procentowego, szukamy naturalnych przerw
-        (gaps) w pozycjach X-center bloków. Duża przerwa = granica kolumny.
-        To działa zarówno dla 2-, jak i 3-kolumnowych layoutów.
-        """
-        if not text_blocks:
+        if self.file_type != 'pdf' or not self._document:
+            return []
+        if page_index < 0 or page_index >= len(self._document):
             return []
 
-        if len(text_blocks) == 1:
-            return [text_blocks[:]]
+        page = self._document[page_index]
+        results = []
 
-        # Oblicz szerokość strony jeśli nie podana
-        if page_width is None:
-            all_x0 = [b[0] for b in text_blocks]
-            all_x1 = [b[2] for b in text_blocks]
-            page_width = max(all_x1) - min(all_x0) if all_x1 else 600
+        for img_info in page.get_images(full=True):
+            xref = img_info[0]
+            try:
+                base_img = self._document.extract_image(xref)
+                width = base_img.get("width", 0)
+                height = base_img.get("height", 0)
 
-        # Oblicz środek X dla każdego bloku
-        blocks_with_cx = [(b, (b[0] + b[2]) / 2) for b in text_blocks]
-        blocks_with_cx.sort(key=lambda item: item[1])
+                # Pomiń miniaturki i ikonki
+                if width < 80 or height < 80:
+                    continue
 
-        # Oblicz przerwy (gaps) między kolejnymi mid-X
-        cx_values = [cx for _, cx in blocks_with_cx]
+                # Konwertuj do PNG jeśli potrzeba
+                img_bytes = base_img["image"]
+                ext = base_img.get("ext", "png").lower()
 
-        if len(cx_values) < 2:
-            return [text_blocks[:]]
+                if ext not in ("png", "jpeg", "jpg"):
+                    # Użyj PyMuPDF do konwersji
+                    pix = fitz.Pixmap(self._document, xref)
+                    if pix.n > 4:  # CMYK
+                        pix = fitz.Pixmap(fitz.csRGB, pix)
+                    img_bytes = pix.tobytes("png")
+                    ext = "png"
 
-        gaps = []
-        for i in range(1, len(cx_values)):
-            gap = cx_values[i] - cx_values[i - 1]
-            gaps.append((gap, i))
+                results.append({
+                    "bytes": img_bytes,
+                    "width": width,
+                    "height": height,
+                    "ext": ext,
+                })
+            except Exception as e:
+                logger.debug("Błąd ekstrakcji obrazu xref=%s: %s", xref, e)
+                continue
 
-        # Mediana przerw — przerwy znacznie większe od mediany to granice kolumn
-        gap_values = sorted([g for g, _ in gaps])
-        median_gap = gap_values[len(gap_values) // 2]
-
-        # Próg: przerwa musi być > 5% szerokości strony I > 3× mediana
-        min_gap = max(page_width * 0.05, median_gap * 3, 20)
-
-        # Znajdź indeksy podziałów
-        split_indices = [0]
-        for gap, idx in gaps:
-            if gap >= min_gap:
-                split_indices.append(idx)
-        split_indices.append(len(blocks_with_cx))
-
-        # Podziel bloki na kolumny
-        columns = []
-        for i in range(len(split_indices) - 1):
-            start = split_indices[i]
-            end = split_indices[i + 1]
-            col = [b for b, _ in blocks_with_cx[start:end]]
-            if col:
-                columns.append(col)
-
-        return columns
-
-    def _get_docx_page_content(self, page_index: int) -> PageContent:
-        all_paragraphs = self._document.paragraphs
-        words_per_page = 500
-        all_text = '\n\n'.join([p.text for p in all_paragraphs])
-        words = all_text.split()
-        start_word = page_index * words_per_page
-        end_word = min(start_word + words_per_page, len(words))
-        page_text = ' '.join(words[start_word:end_word])
-        images = self._extract_images_from_docx()
-        return PageContent(page_index + 1, page_text, images)
-
-    def _get_doc_page_content(self, page_index: int) -> PageContent:
-        text = re.sub('<[^<]+?>', '', self._html_content)
-        words = text.split()
-        words_per_page = 500
-        start_word = page_index * words_per_page
-        end_word = min(start_word + words_per_page, len(words))
-        page_text = ' '.join(words[start_word:end_word])
-        return PageContent(page_index + 1, page_text, [])
-
-    def _extract_images_from_pdf_page(self, page_index: int) -> List[Dict]:
-        images = []
-        if self.file_type != 'pdf':
-            return images
-        try:
-            page = self._document.load_page(page_index)
-            for img_index, img in enumerate(page.get_images(full=True)):
-                xref = img[0]
-                base_image = self._document.extract_image(xref)
-                if (
-                    base_image
-                    and base_image.get("width", 0) > 100
-                    and base_image.get("height", 0) > 100
-                ):
-                    images.append({
-                        'image': base_image['image'],
-                        'ext': base_image['ext'],
-                        'width': base_image.get('width', 0),
-                        'height': base_image.get('height', 0),
-                        'index': img_index,
-                    })
-        except Exception as e:
-            logger.warning(
-                "Nie udało się wyekstraktować obrazów ze strony %d: %s",
-                page_index + 1, e,
-            )
-        return images
-
-    def _extract_images_from_docx(self) -> List[Dict]:
-        images = []
-        try:
-            for rel in self._document.part.rels.values():
-                if "image" in rel.target_ref:
-                    img_data = rel.target_part.blob
-                    ext = rel.target_ref.split('.')[-1]
-                    images.append({
-                        'image': img_data,
-                        'ext': ext,
-                        'index': len(images)
-                    })
-        except Exception as e:
-            logger.warning("Nie udało się wyekstraktować obrazów z DOCX: %s", e)
-        return images
-
-    def render_page_as_image(self, page_index: int) -> Optional[bytes]:
-        """Renderuje stronę PDF jako PNG (podgląd, 144 DPI)."""
-        if self.file_type != 'pdf':
-            return None
-        try:
-            page = self._document.load_page(page_index)
-            pix = page.get_pixmap(
-                matrix=fitz.Matrix(RENDER_SCALE_PREVIEW, RENDER_SCALE_PREVIEW)
-            )
-            return pix.tobytes("png")
-        except Exception as e:
-            logger.error(
-                "Błąd podczas renderowania strony %d: %s", page_index + 1, e
-            )
-            return None
-
-    def render_page_highres(self, page_index: int) -> Optional[bytes]:
-        """Renderuje stronę PDF jako PNG w wysokiej rozdzielczości (216 DPI)."""
-        if self.file_type != 'pdf':
-            return None
-        try:
-            page = self._document.load_page(page_index)
-            pix = page.get_pixmap(
-                matrix=fitz.Matrix(RENDER_SCALE_HIGHRES, RENDER_SCALE_HIGHRES)
-            )
-            return pix.tobytes("png")
-        except Exception as e:
-            logger.error(
-                "Błąd podczas renderowania strony %d (highres): %s", page_index + 1, e
-            )
-            return None
+        return results

@@ -7,4 +7,5 @@ pdf_processor_projects/
 *.md
 cloudbuild.yaml
 .env
-.streamlit/
+# NIE ignoruj .streamlit/ — config.toml jest potrzebny dla Streamlit w Docker
+# .streamlit/

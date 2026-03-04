@@ -1,7 +1,15 @@
 [server]
-port = 8080
-headless = true
-address = "0.0.0.0"
-enableCORS = false
-enableXsrfProtection = false
-maxUploadSize = 200
+# Streamlit Cloud zarządza portem automatycznie — nie ustawiaj port/address tutaj!
+# Te ustawienia są tylko dla uruchamiania lokalnego lub Docker.
+maxUploadSize = 500
+maxMessageSize = 500
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#7c3aed"
+backgroundColor = "#0f0f1a"
+secondaryBackgroundColor = "#1a1a2e"
+textColor = "#e2e8f0"
+font = "sans serif"
